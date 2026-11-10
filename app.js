@@ -219,8 +219,8 @@ window.addEventListener("hashchange", () => {
    CAPTURAS
    ===================================================================== */
 let borr = null; // borrador de la planilla del día
-const borrNuevo = () => ({ fecha: hoy(), lugar: "", peces: [], fotos: [] });
-const pezNuevo = () => ({ especie: "", otra: "", arte: "", peso: "", hora: horaStr(), lugar: "", notas: "" });
+const borrNuevo = () => ({ fecha: hoy(), peces: [], fotos: [] });
+const pezNuevo = (lugar = "") => ({ especie: "", otra: "", arte: "", peso: "", hora: horaStr(), lugar, notas: "" });
 const guardarBorr = () => store.set("borrador", borr);
 
 function verCapturas() {
@@ -229,10 +229,7 @@ function verCapturas() {
   main.innerHTML = `
   <div class="card">
     <h2>Planilla del día</h2>
-    <div class="row">
-      <div><label for="c-fecha">Fecha</label><input id="c-fecha" type="date" value="${esc(borr.fecha)}"></div>
-      <div><label for="c-lugar">Lugar</label><input id="c-lugar" list="dl-lugares" value="${esc(borr.lugar)}" placeholder="Ej.: Isla Pelada"></div>
-    </div>
+    <label for="c-fecha">Fecha</label><input id="c-fecha" type="date" value="${esc(borr.fecha)}">
     <datalist id="dl-lugares">${lugares.map(l => `<option value="${esc(l)}">`).join("")}</datalist>
     <div id="peces"></div>
     <button class="btn secondary" id="add-pez">+ Agregar pez</button>
@@ -247,8 +244,10 @@ function verCapturas() {
   </div>
   <div class="card"><h3>Enviadas desde este teléfono</h3><ul class="list" id="enviadas"></ul></div>`;
   $("#c-fecha").onchange = e => { borr.fecha = e.target.value; guardarBorr(); };
-  $("#c-lugar").oninput = e => { borr.lugar = e.target.value; guardarBorr(); };
-  $("#add-pez").onclick = () => { borr.peces.push(pezNuevo()); guardarBorr(); pintarPeces(); };
+  $("#add-pez").onclick = () => {   // el pez nuevo arranca con el lugar del anterior (se puede cambiar)
+    const ant = borr.peces[borr.peces.length - 1];
+    borr.peces.push(pezNuevo(ant ? ant.lugar : "")); guardarBorr(); pintarPeces();
+  };
   $("#f-cam").onchange = e => sumarFotos(e.target);
   $("#f-gal").onchange = e => sumarFotos(e.target);
   $("#c-enviar").onclick = enviarPlanilla;
@@ -271,7 +270,7 @@ function pintarPeces() {
       <div><label>Peso</label><div class="suffix"><input data-f="peso" inputmode="decimal" value="${esc(p.peso)}" placeholder="0,0"><span>kg</span></div></div>
       <div><label>Hora</label><input data-f="hora" type="time" value="${esc(p.hora)}"></div>
     </div>
-    <label>Lugar</label><input data-f="lugar" list="dl-lugares" value="${esc(p.lugar)}" placeholder="Si es otro que el del día">
+    <label>Lugar</label><input data-f="lugar" list="dl-lugares" value="${esc(p.lugar)}" placeholder="Ej.: Isla Pelada">
     <label>Notas</label><textarea data-f="notas" placeholder="Opcional">${esc(p.notas)}</textarea>
   </div>`).join("");
   box.onclick = e => {
@@ -322,18 +321,18 @@ async function enviarPlanilla() {
   const planillaId = uid();
   const item = {
     id: planillaId, creado: Date.now(),
-    planilla: { id: planillaId, guia_id: perfil.guia_id, fecha: borr.fecha, lugar: borr.lugar.trim() || null },
+    planilla: { id: planillaId, guia_id: perfil.guia_id, fecha: borr.fecha, lugar: null },
     capturas: borr.peces.map(p => ({
       id: uid(), planilla_id: planillaId, guia_id: perfil.guia_id, fecha: borr.fecha,
       hora: p.hora || null,
       especie: p.especie === "Otra" ? p.otra.trim() : p.especie,
       arte: p.arte || null,
       peso_kg: p.peso ? Number(String(p.peso).replace(",", ".")) : null,
-      lugar: (p.lugar || "").trim() || borr.lugar.trim() || null,
+      lugar: (p.lugar || "").trim() || null,
       notas: (p.notas || "").trim() || null
     })),
     fotos: borr.fotos.map(id => ({ id, subida: false })),
-    lugares: [...new Set([borr.lugar, ...borr.peces.map(p => p.lugar)].map(x => (x || "").trim()).filter(Boolean))]
+    lugares: [...new Set(borr.peces.map(p => (p.lugar || "").trim()).filter(Boolean))]
   };
   await idb.put("cola", item.id, item);
   const hist = store.get("enviadas", []);
@@ -616,7 +615,7 @@ async function verEquipo() {
     if (error) return toast(error.message); verEquipo();
   };
   $("#g-ok").onclick = async () => {
-    const nombre = $("#g-nombre").value.trim(), chart = $("#g-chart").value.trim().toUpperCase();
+    const nombre = $("#g-nombre").value.trim(), chart = $("#g-chart").value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
     if (!nombre || !chart) return toast("Completá el nombre y cómo figura en el chart.");
     const { error } = await sb.from("guias").insert({ nombre, nombre_chart: chart });
     if (error) return toast(/duplicate/i.test(error.message) ? "Ya hay un guía con ese nombre en el chart." : error.message);
