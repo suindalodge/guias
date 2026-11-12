@@ -1,5 +1,5 @@
 // Guarda la app en el teléfono para que abra sin señal.
-const VERSION = "suinda-v1";
+const VERSION = "suinda-v2";
 const PROPIOS = ["./", "./index.html", "./app.js", "./config.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js";
 
@@ -35,7 +35,7 @@ async function redPrimero(req) {
   const cache = await caches.open(VERSION);
   try {
     const res = await Promise.race([
-      fetch(req),
+      fetch(req, { cache: "no-cache" }),   // siempre pregunta si hay una versión nueva
       new Promise((_, no) => setTimeout(() => no(new Error("lento")), 4000))
     ]);
     if (res.ok) cache.put(req, res.clone());
