@@ -1160,7 +1160,7 @@ async function verMisPropinas() {
   let datos = store.get("mispropinas2", null);
   if (online()) {
     const [rr, rm] = await Promise.all([
-      todas(() => sb.from("propina_reparto").select("guia_id,nombre,sesiones,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)").eq("guia_id", perfil.guia_id).order("propina_id")),
+      todas(() => sb.from("propina_reparto").select("guia_id,nombre,sesiones,turnos,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)").eq("guia_id", perfil.guia_id).order("propina_id")),
       todas(() => sb.from("propina_movimientos").select("id,fecha,tipo,moneda,monto,nota,anulado").eq("guia_id", perfil.guia_id).eq("anulado", false).order("id"))
     ]);
     if (!rr.error && !rm.error) { datos = { rep: rr.data.filter(r => r.propinas && !r.propinas.anulada), movs: rm.data }; store.set("mispropinas2", datos); }
@@ -1172,7 +1172,7 @@ async function verMisPropinas() {
   // movimientos: propinas (+) y pagos (−), del más nuevo al más viejo
   const items = [
     ...datos.rep.map(r => ({ fecha: r.propinas.fecha, html: (() => { const p = r.propinas;
-      const ses = Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 });
+      const ses = r.turnos != null ? String(r.turnos) : Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 });
       return `<li style="display:block"><div class="mov"><b>${esc(p.clientes || p.grupo)}</b><span class="monto mas">+ ${plata(p.moneda, Number(r.monto_efectivo) + Number(r.monto_tarjeta))}</span></div>
         <span class="meta">${esc(p.grupo)} · ${fCorta(p.fecha)} · trabajaste ${ses} de ${p.sesiones} ${p.sesiones === 1 ? "sesión" : "sesiones"}</span>
         ${Number(r.monto_tarjeta) && !p.tarjeta_pagada ? `<span class="meta" style="display:block">Incluye ${plata(p.moneda, r.monto_tarjeta)} de tarjeta que el lodge todavía no cobró</span>` : ""}</li>`; })() })),
@@ -1184,8 +1184,15 @@ async function verMisPropinas() {
   <div class="prox"><small>Te deben de propinas</small><strong>${saldoTxt(cc.mon)}</strong>
     ${xc ? `<span>Además, ${xc} de tarjeta que el lodge todavía no cobró</span>` : `<span>Se acumula hasta que el jefe de guías te lo paga</span>`}</div>
   <div class="card"><h2>Movimientos</h2>${items.length ? `<ul class="list">${items.map(i => i.html).join("")}</ul>` : `<p class="empty">Todavía no tenés propinas cargadas.</p>`}
-  <p class="hint">Cada propina se reparte entre las sesiones de pesca del grupo, y cada sesión entre los guías de ese turno.</p></div>`;
+  <p class="hint">Cada propina se reparte en partes iguales entre las sesiones de pesca del grupo, y la parte de cada sesión se divide entre todos los guías que trabajaron ese turno.</p></div>`;
   activarSeg("dias_modo", verDias);
+}
+
+// "3 sesiones" (enteras); si alguna la compartió con otros guías del turno, se aclara
+function sesTxt(r) {
+  if (r.turnos == null) return Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 }) + " sesiones";
+  const comp = Math.abs(Number(r.sesiones) - r.turnos) > 0.001;
+  return `${r.turnos} ${r.turnos === 1 ? "sesión" : "sesiones"}${comp ? " · compartidas con otros guías del turno" : ""}`;
 }
 
 /* ---- Jefe: carga, reparto e historial ---- */
@@ -1272,7 +1279,7 @@ async function calcularReparto() {
   $("#pr-prev").innerHTML = `<div class="card"><h2>Reparto</h2>
     ${propPrev.map(p => `<div class="cta"><h3>${esc(grupoTxt(p.grupo, (propGrupos.find(g => g.grupo === p.grupo) || {}).clientes))}</h3>
       <p class="meta">${p.rep[0].total_sesiones} sesiones · ${plata(p.moneda, p.ef + p.tc)} (efectivo ${plata(p.moneda, p.ef)} · tarjeta ${plata(p.moneda, p.tc)})</p>
-      <ul class="list">${p.rep.map(r => `<li><div><b>${esc(r.nombre)}</b><span class="meta">${Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 })} sesiones</span></div>
+      <ul class="list">${p.rep.map(r => `<li><div><b>${esc(r.nombre)}</b><span class="meta">${sesTxt(r)}</span></div>
         <span class="monto">${plata(p.moneda, (p.ef + p.tc) * r.fraccion)}</span></li>`).join("")}</ul></div>`).join("")}
     <div class="cta"><h3>Total por guía</h3><ul class="list">${Object.values(tot).map(t => `<li><div><b>${esc(t.nombre)}</b>
       <span class="meta">Efectivo ${sumarMonedas(t.items.map(x => ({ moneda: x.moneda, monto: x.ef })))} · Tarjeta ${sumarMonedas(t.items.map(x => ({ moneda: x.moneda, monto: x.tc })))}</span></div>
@@ -1293,7 +1300,7 @@ async function guardarPropinas() {
 }
 async function pintarHistorialPropinas() {
   const { data, error } = await sb.from("propinas")
-    .select("id,grupo,clientes,fecha,moneda,efectivo,tarjeta,tarjeta_pagada,sesiones,propina_reparto(nombre,guia_id,sesiones,monto_efectivo,monto_tarjeta)")
+    .select("id,grupo,clientes,fecha,moneda,efectivo,tarjeta,tarjeta_pagada,sesiones,propina_reparto(nombre,guia_id,sesiones,turnos,monto_efectivo,monto_tarjeta)")
     .eq("anulada", false).gte("fecha", sumaDias(hoy(), -120)).order("fecha", { ascending: false }).order("creado", { ascending: false });
   const ul = $("#pr-hist"); if (!ul) return;
   if (error) { ul.innerHTML = `<li class="empty">${esc(error.message)}</li>`; return; }
