@@ -198,6 +198,15 @@ details.conf input{box-sizing:border-box;width:100%}
 .ch-res{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
 .ch-res .list li{padding:8px 0}
 
+/* Propinas */
+.montos{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:6px;font-size:.95rem}
+.montos em{font-style:normal;font-size:.8rem;font-weight:700;margin-left:4px}
+.montos em.si{color:var(--ok)}
+.montos em.pend{color:var(--gold)}
+details.rep{margin-top:6px}
+details.rep summary{cursor:pointer;color:var(--river);font-weight:600;font-size:.9rem}
+details.rep .list li{padding:6px 0;font-size:.95rem}
+
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:600;font-size:.95rem;z-index:30;max-width:90vw;text-align:center}
 @media (prefers-reduced-motion: no-preference){ .toast{animation:sube .2s ease-out} @keyframes sube{from{opacity:0;transform:translate(-50%,8px)}} }
 </style>

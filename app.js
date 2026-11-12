@@ -228,6 +228,14 @@ const borrNuevo = () => ({ fecha: hoy(), peces: [], fotos: [] });
 const pezNuevo = (lugar = "") => ({ especie: "", otra: "", arte: "", peso: "", hora: horaStr(), lugar, notas: "" });
 const guardarBorr = () => store.set("borrador", borr);
 
+function seg(clave, opciones, actual, al) {   // botones internos de una pestaña
+  return `<div class="seg" data-seg="${clave}" style="grid-template-columns:repeat(${opciones.length},1fr)">${opciones.map(([k, n]) =>
+    `<button data-modo="${k}" aria-selected="${actual === k}">${n}</button>`).join("")}</div>`;
+}
+function activarSeg(clave, fn) {
+  const sg = main.querySelector(`[data-seg="${clave}"]`); if (!sg) return;
+  sg.onclick = e => { const b = e.target.closest("[data-modo]"); if (!b) return; store.set(clave, b.dataset.modo); fn(); };
+}
 const esJefe = () => perfil && (perfil.rol === "admin" || perfil.rol === "jefe");
 const selectorCaptura = modo => esJefe() && perfil.guia_id ? `<div class="seg" role="tablist">
   <button data-modo="cargar" aria-selected="${modo === "cargar"}">Cargar</button>
@@ -432,6 +440,7 @@ function pintarCola(n) {
    MIS DÍAS
    ===================================================================== */
 async function verDias() {
+  if (store.get("dias_modo", "dias") === "propinas") return verMisPropinas();
   main.innerHTML = `<p class="loading">Cargando tus días…</p>`;
   let filas = store.get("misdias", null);
   if (online()) {
@@ -441,7 +450,7 @@ async function verDias() {
     if (!error && data) { filas = data; store.set("misdias", data); store.set("misdias_at", Date.now()); }
   }
   if (tabActual !== "dias") return;
-  if (!filas) { main.innerHTML = `<div class="card"><p class="empty">Abrí esta pestaña con señal una vez para guardar tus días.</p></div>`; return; }
+  if (!filas) { main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "dias") + `<div class="card"><p class="empty">Abrí esta pestaña con señal una vez para guardar tus días.</p></div>`; activarSeg("dias_modo", verDias); return; }
 
   // Bloques de guiadas
   const bloques = [];
@@ -471,8 +480,9 @@ async function verDias() {
     }).join("")}</ul></div>`;
   }).join("");
   const at = store.get("misdias_at", 0);
-  main.innerHTML = banner + `<div class="card">${listado || `<p class="empty">Sin días este mes.</p>`}
+  main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "dias") + banner + `<div class="card">${listado || `<p class="empty">Sin días este mes.</p>`}
     <p class="hint">Según el chart del lodge${at ? ` · actualizado ${new Date(at).toLocaleString("es-AR", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""} · La línea dorada marca el inicio de cada bloque.</p></div>`;
+  activarSeg("dias_modo", verDias);
 }
 const fmtDias = n => (n === 1 ? "1 día" : String(n).replace(".", ",") + " días");
 
@@ -848,6 +858,7 @@ function pintarEntregasHist() {
    ===================================================================== */
 let ctaClientes = [], ctaEntregas = [], ctaSel = new Set();
 async function verCuentas() {
+  if (esJefe() && store.get("cta_modo", "clientes") === "propinas") return verPropinasJefe();
   main.innerHTML = `<p class="loading">Cargando cuentas…</p>`;
   if (!online()) { main.innerHTML = `<div class="card"><p class="empty">Para ver las cuentas hace falta señal.</p></div>`; return; }
   const desde = sumaDias(hoy(), -30);
@@ -862,7 +873,7 @@ async function verCuentas() {
   ctaClientes = rc.data.filter(c => conEntregas.has(c.id) || c.fin >= hoy());
   ctaSel = new Set([...ctaSel].filter(id => ctaClientes.some(c => c.id === id)));
   const grupos = [...new Set(ctaClientes.map(c => c.grupo).filter(Boolean))];
-  main.innerHTML = `
+  main.innerHTML = (esJefe() ? seg("cta_modo", [["clientes", "Clientes"], ["propinas", "Propinas"]], "clientes") : "") + `
   <div class="card"><h2>Cuentas de clientes</h2>
     <div class="chips" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr))">
       <button class="chip" data-atajo="hoy">Terminan hoy</button>
@@ -872,6 +883,7 @@ async function verCuentas() {
     <ul class="list checks" id="cta-lista" style="margin-top:10px"></ul>
   </div>
   <div id="cta-detalle"></div>`;
+  activarSeg("cta_modo", verCuentas);
   pintarCtaLista(); pintarCtaDetalle();
   main.querySelector(".chips").onclick = e => {
     const b = e.target.closest("[data-atajo]"); if (!b) return;
@@ -1087,6 +1099,187 @@ async function verResumen() {
     box.innerHTML = urls.map((u, i) => `<div><img src="${u.url}" alt="Foto ${i + 1}" loading="lazy" data-i="${i}"></div>`).join("");
     box.onclick = e => { const im = e.target.closest("[data-i]"); if (im) abrirVisorFotos(`Fotos · ${titulo}`, urls, Number(im.dataset.i)); };
   }
+}
+
+/* =====================================================================
+   PROPINAS
+   ===================================================================== */
+const grupoTxt = (g, cl) => cl ? `${g} · ${cl}` : g;
+function sumarMonedas(lista) {   // [{moneda, monto}] → texto "USD 10 + $ 500"
+  const t = {}; lista.forEach(x => { if (x.monto) t[x.moneda] = (t[x.moneda] || 0) + Number(x.monto); });
+  return Object.keys(t).length ? Object.entries(t).map(([m, n]) => plata(m, n)).join(" + ") : plata("USD", 0);
+}
+
+/* ---- Guía: mis propinas ---- */
+async function verMisPropinas() {
+  main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "propinas") + `<p class="loading">Cargando…</p>`;
+  activarSeg("dias_modo", verDias);
+  let filas = store.get("mispropinas", null);
+  if (online()) {
+    const { data, error } = await sb.from("propina_reparto")
+      .select("sesiones,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)")
+      .eq("guia_id", perfil.guia_id);
+    if (!error && data) { filas = data.filter(r => r.propinas && !r.propinas.anulada); store.set("mispropinas", filas); }
+  }
+  if (tabActual !== "dias" || store.get("dias_modo") !== "propinas") return;
+  const cab = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "propinas");
+  if (!filas) { main.innerHTML = cab + `<div class="card"><p class="empty">Abrí esta pestaña con señal una vez.</p></div>`; activarSeg("dias_modo", verDias); return; }
+  filas.sort((a, b) => b.propinas.fecha.localeCompare(a.propinas.fecha));
+  const efe = filas.map(r => ({ moneda: r.propinas.moneda, monto: r.monto_efectivo }));
+  const tPag = filas.filter(r => r.propinas.tarjeta_pagada).map(r => ({ moneda: r.propinas.moneda, monto: r.monto_tarjeta }));
+  const tPen = filas.filter(r => !r.propinas.tarjeta_pagada).map(r => ({ moneda: r.propinas.moneda, monto: r.monto_tarjeta }));
+  const hayPen = tPen.some(x => Number(x.monto) > 0);
+  main.innerHTML = cab + `
+  <div class="prox"><small>Total de propinas</small><strong>${sumarMonedas([...efe, ...tPag, ...tPen])}</strong>
+    <span>Efectivo ${sumarMonedas(efe)}${tPag.some(x => Number(x.monto) > 0) ? ` · Tarjeta cobrada ${sumarMonedas(tPag)}` : ""}${hayPen ? ` · Tarjeta pendiente ${sumarMonedas(tPen)}` : ""}</span></div>
+  <div class="card"><h2>Detalle</h2>${filas.length ? `<ul class="list">${filas.map(r => {
+    const p = r.propinas;
+    const ses = Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 });
+    return `<li style="display:block"><b>${esc(p.clientes || p.grupo)}</b>
+      <span class="meta">${esc(p.grupo)} · ${fCorta(p.fecha)} · trabajaste ${ses} de ${p.sesiones} ${p.sesiones === 1 ? "sesión" : "sesiones"}</span>
+      <div class="montos">${Number(r.monto_efectivo) ? `<span>Efectivo <b>${plata(p.moneda, r.monto_efectivo)}</b></span>` : ""}
+        ${Number(r.monto_tarjeta) ? `<span>Tarjeta <b>${plata(p.moneda, r.monto_tarjeta)}</b> <em class="${p.tarjeta_pagada ? "si" : "pend"}">${p.tarjeta_pagada ? "cobrada" : "pendiente"}</em></span>` : ""}</div></li>`;
+  }).join("")}</ul>` : `<p class="empty">Todavía no tenés propinas cargadas.</p>`}
+  <p class="hint">Cada propina se reparte entre las sesiones de pesca del grupo, y cada sesión entre los guías de ese turno.</p></div>`;
+  activarSeg("dias_modo", verDias);
+}
+
+/* ---- Jefe: carga, reparto e historial ---- */
+let propFilas = [], propGrupos = [], propPrev = null;
+async function verPropinasJefe() {
+  const cab = seg("cta_modo", [["clientes", "Clientes"], ["propinas", "Propinas"]], "propinas");
+  main.innerHTML = cab + `<p class="loading">Cargando…</p>`; activarSeg("cta_modo", verCuentas);
+  if (!online()) { main.innerHTML = cab + `<div class="card"><p class="empty">Para las propinas hace falta señal.</p></div>`; activarSeg("cta_modo", verCuentas); return; }
+  const [rs, rc] = await Promise.all([
+    sb.from("chart_sesiones").select("grupo,fecha,codigo").gte("fecha", sumaDias(hoy(), -60)).in("codigo", ["F", "FA", "FD", "AD"]),
+    sb.from("clientes").select("nombre,grupo").not("grupo", "is", null)
+  ]);
+  if (tabActual !== "cuentas") return;
+  const nombres = {}; (rc.data || []).forEach(c => (nombres[c.grupo] ||= new Set()).add(c.nombre));
+  const g = {}; (rs.data || []).forEach(x => { const k = x.grupo; (g[k] ||= { grupo: k, n: 0, ult: x.fecha }).n++; if (x.fecha > g[k].ult) g[k].ult = x.fecha; });
+  propGrupos = Object.values(g).sort((a, b) => b.ult.localeCompare(a.ult)).map(x => ({ ...x, clientes: nombres[x.grupo] ? [...nombres[x.grupo]].join(", ") : "" }));
+  if (!propFilas.length) propFilas = [{ grupo: "", moneda: "USD", efectivo: "", tarjeta: "" }];
+  propPrev = null;
+  main.innerHTML = cab + `
+  <div class="card"><h2>Cargar propinas</h2>
+    <label for="pr-fecha">Fecha</label><input id="pr-fecha" type="date" value="${hoy()}">
+    <div id="pr-filas"></div>
+    <button class="btn secondary" id="pr-mas">+ Otro grupo</button>
+    <p class="err" id="pr-err" hidden></p>
+    <button class="btn" id="pr-calc">Calcular reparto</button>
+  </div>
+  <div id="pr-prev"></div>
+  <div id="pr-pend"></div>
+  <div class="card"><h2>Historial</h2><ul class="list" id="pr-hist"><li class="empty">Cargando…</li></ul></div>`;
+  activarSeg("cta_modo", verCuentas);
+  pintarPropFilas();
+  $("#pr-mas").onclick = () => { leerPropFilas(); propFilas.push({ grupo: "", moneda: propFilas[0].moneda, efectivo: "", tarjeta: "" }); pintarPropFilas(); };
+  $("#pr-calc").onclick = calcularReparto;
+  pintarHistorialPropinas();
+}
+function pintarPropFilas() {
+  $("#pr-filas").innerHTML = propFilas.map((f, i) => `
+  <div class="pez" data-i="${i}">
+    <div class="pez-head"><b>Grupo ${i + 1}</b>${propFilas.length > 1 ? `<button class="x" data-quitar="${i}">Quitar</button>` : ""}</div>
+    <label>Grupo</label>
+    <select data-f="grupo"><option value="">Elegí el grupo</option>${propGrupos.map(g => `<option value="${esc(g.grupo)}" ${f.grupo === g.grupo ? "selected" : ""}>${esc(grupoTxt(g.grupo, g.clientes))}</option>`).join("")}</select>
+    <div class="row3" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) 84px">
+      <div><label>Efectivo</label><input data-f="efectivo" inputmode="decimal" value="${esc(f.efectivo)}" placeholder="0"></div>
+      <div><label>Tarjeta</label><input data-f="tarjeta" inputmode="decimal" value="${esc(f.tarjeta)}" placeholder="0"></div>
+      <div><label>Moneda</label><select data-f="moneda"><option value="USD" ${f.moneda === "USD" ? "selected" : ""}>USD</option><option value="ARS" ${f.moneda === "ARS" ? "selected" : ""}>$</option></select></div>
+    </div>
+  </div>`).join("");
+  $("#pr-filas").onclick = e => { const q = e.target.closest("[data-quitar]"); if (q) { leerPropFilas(); propFilas.splice(+q.dataset.quitar, 1); pintarPropFilas(); } };
+}
+function leerPropFilas() {
+  document.querySelectorAll("#pr-filas [data-i]").forEach(el => {
+    const f = propFilas[+el.dataset.i];
+    el.querySelectorAll("[data-f]").forEach(inp => f[inp.dataset.f] = inp.value);
+  });
+}
+const num = v => {   // acepta "1.250,50", "1250,5" o "1250.5"
+  let t = String(v || "0").trim();
+  if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+  return Number(t) || 0;
+};
+async function calcularReparto() {
+  leerPropFilas();
+  const err = $("#pr-err"); err.hidden = true;
+  const fallo = m => { err.textContent = m; err.hidden = false; };
+  const validas = propFilas.filter(f => f.grupo);
+  if (!validas.length) return fallo("Elegí al menos un grupo.");
+  for (const f of validas) if (!num(f.efectivo) && !num(f.tarjeta)) return fallo(`Falta el monto de ${f.grupo}.`);
+  if (new Set(validas.map(f => f.grupo)).size !== validas.length) return fallo("Hay un grupo repetido.");
+  $("#pr-calc").disabled = true;
+  const res = await Promise.all(validas.map(f => sb.rpc("reparto_grupo", { p_grupo: f.grupo })));
+  $("#pr-calc").disabled = false;
+  const e1 = res.find(r => r.error); if (e1) return fallo(e1.error.message);
+  propPrev = validas.map((f, i) => ({ ...f, ef: num(f.efectivo), tc: num(f.tarjeta), rep: res[i].data || [] }));
+  const sinSes = propPrev.find(p => !p.rep.length); if (sinSes) { propPrev = null; return fallo(`${sinSes.grupo} no tiene sesiones de pesca en el chart.`); }
+  // total por guía
+  const tot = {};
+  propPrev.forEach(p => p.rep.forEach(r => {
+    const k = r.nombre; const t = (tot[k] ||= { nombre: k, sin: !r.guia_id, items: [] });
+    t.items.push({ moneda: p.moneda, ef: p.ef * r.fraccion, tc: p.tc * r.fraccion });
+  }));
+  const avisos = Object.values(tot).filter(t => t.sin);
+  $("#pr-prev").innerHTML = `<div class="card"><h2>Reparto</h2>
+    ${propPrev.map(p => `<div class="cta"><h3>${esc(grupoTxt(p.grupo, (propGrupos.find(g => g.grupo === p.grupo) || {}).clientes))}</h3>
+      <p class="meta">${p.rep[0].total_sesiones} sesiones · ${plata(p.moneda, p.ef + p.tc)} (efectivo ${plata(p.moneda, p.ef)} · tarjeta ${plata(p.moneda, p.tc)})</p>
+      <ul class="list">${p.rep.map(r => `<li><div><b>${esc(r.nombre)}</b><span class="meta">${Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 })} sesiones</span></div>
+        <span class="monto">${plata(p.moneda, (p.ef + p.tc) * r.fraccion)}</span></li>`).join("")}</ul></div>`).join("")}
+    <div class="cta"><h3>Total por guía</h3><ul class="list">${Object.values(tot).map(t => `<li><div><b>${esc(t.nombre)}</b>
+      <span class="meta">Efectivo ${sumarMonedas(t.items.map(x => ({ moneda: x.moneda, monto: x.ef })))} · Tarjeta ${sumarMonedas(t.items.map(x => ({ moneda: x.moneda, monto: x.tc })))}</span></div>
+      <span class="monto">${sumarMonedas(t.items.map(x => ({ moneda: x.moneda, monto: x.ef + x.tc })))}</span></li>`).join("")}</ul></div>
+    ${avisos.length ? `<p class="err">Hay turnos sin guía reconocido (${avisos.map(a => esc(a.nombre)).join(", ")}). Corregí el chart y tocá «Actualizar desde el chart» en Equipo antes de guardar, o guardá igual y esa parte queda sin repartir.</p>` : ""}
+    <button class="btn" id="pr-guardar">Guardar propinas</button></div>`;
+  $("#pr-guardar").onclick = guardarPropinas;
+  $("#pr-prev").scrollIntoView({ behavior: "smooth" });
+}
+async function guardarPropinas() {
+  const fecha = $("#pr-fecha").value || hoy();
+  $("#pr-guardar").disabled = true;
+  for (const p of propPrev) {
+    const { error } = await sb.rpc("registrar_propina", { p_grupo: p.grupo, p_fecha: fecha, p_moneda: p.moneda, p_efectivo: p.ef, p_tarjeta: p.tc, p_nota: null });
+    if (error) { $("#pr-guardar").disabled = false; return toast(`No se pudo guardar ${p.grupo}: ${error.message}`, 5000); }
+  }
+  toast("Propinas guardadas."); propFilas = []; propPrev = null; verPropinasJefe();
+}
+async function pintarHistorialPropinas() {
+  const { data, error } = await sb.from("propinas")
+    .select("id,grupo,clientes,fecha,moneda,efectivo,tarjeta,tarjeta_pagada,sesiones,propina_reparto(nombre,guia_id,sesiones,monto_efectivo,monto_tarjeta)")
+    .eq("anulada", false).gte("fecha", sumaDias(hoy(), -120)).order("fecha", { ascending: false }).order("creado", { ascending: false });
+  const ul = $("#pr-hist"); if (!ul) return;
+  if (error) { ul.innerHTML = `<li class="empty">${esc(error.message)}</li>`; return; }
+  // Tarjeta pendiente por guía
+  const pen = {};
+  data.filter(p => !p.tarjeta_pagada && Number(p.tarjeta)).forEach(p => p.propina_reparto.forEach(r => {
+    (pen[r.nombre] ||= []).push({ moneda: p.moneda, monto: r.monto_tarjeta });
+  }));
+  $("#pr-pend").innerHTML = Object.keys(pen).length ? `<div class="card"><h2>Tarjeta pendiente de pagar</h2>
+    <ul class="list">${Object.entries(pen).map(([n, it]) => `<li><b>${esc(n)}</b><span class="monto">${sumarMonedas(it)}</span></li>`).join("")}</ul></div>` : "";
+  ul.innerHTML = data.length ? data.map(p => `<li style="display:block" data-p="${p.id}">
+    <div style="display:flex;justify-content:space-between;gap:10px"><div><b>${esc(p.grupo)}</b><span class="meta" style="display:block">${esc(p.clientes || "")}</span>
+      <span class="meta" style="display:block">${fCorta(p.fecha)} · ${p.sesiones} sesiones · efectivo ${plata(p.moneda, p.efectivo)} · tarjeta ${plata(p.moneda, p.tarjeta)}</span></div>
+      <span class="monto">${plata(p.moneda, Number(p.efectivo) + Number(p.tarjeta))}</span></div>
+    <details class="rep"><summary>Ver reparto</summary><ul class="list">${p.propina_reparto.sort((a, b) => (Number(b.monto_efectivo) + Number(b.monto_tarjeta)) - (Number(a.monto_efectivo) + Number(a.monto_tarjeta))).map(r =>
+      `<li><span>${esc(r.nombre)}</span><span class="monto">${plata(p.moneda, Number(r.monto_efectivo) + Number(r.monto_tarjeta))}</span></li>`).join("")}</ul></details>
+    <div class="acciones" style="margin-top:8px;justify-content:flex-start">
+      ${Number(p.tarjeta) && !p.tarjeta_pagada ? `<button class="btn small" data-pagar="${p.id}">Marcar tarjeta como pagada</button>` : Number(p.tarjeta) ? `<span class="estado si">Tarjeta pagada</span>` : ""}
+      <button class="btn small danger" data-anular="${p.id}">Anular</button></div></li>`).join("")
+    : `<li class="empty">Todavía no hay propinas cargadas.</li>`;
+  ul.onclick = async e => {
+    const pg = e.target.closest("[data-pagar]"), an = e.target.closest("[data-anular]");
+    if (pg) {
+      if (!confirm("¿Marcar como pagada la parte con tarjeta de esta propina?")) return;
+      const { error } = await sb.from("propinas").update({ tarjeta_pagada: true, tarjeta_pagada_en: new Date().toISOString() }).eq("id", pg.dataset.pagar);
+      toast(error ? error.message : "Marcada como pagada."); pintarHistorialPropinas();
+    } else if (an) {
+      if (!confirm("¿Anular esta propina? Deja de figurar para los guías.")) return;
+      const { error } = await sb.from("propinas").update({ anulada: true }).eq("id", an.dataset.anular);
+      toast(error ? error.message : "Propina anulada."); pintarHistorialPropinas();
+    }
+  };
 }
 
 iniciar();
