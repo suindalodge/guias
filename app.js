@@ -1410,6 +1410,8 @@ async function pintarCuentaCorriente() {
    SUELDOS DE GUÍAS (house manager y jefe de guías) — todo en dólares
    ===================================================================== */
 const usd = n => plata("USD", Math.round(Number(n || 0) * 100) / 100);
+const pesos = n => plata("ARS", Math.round(Number(n || 0) * 100) / 100);
+const totalSue = (sueldo, viat) => usd(sueldo) + (viat ? " + " + pesos(viat) : "");   // sueldo en USD, viático en $
 async function verSueldos() {
   const cab = segCta("sueldos");
   main.innerHTML = cab + `<p class="loading">Cargando…</p>`; activarSeg("cta_modo", verCuentas);
@@ -1418,7 +1420,7 @@ async function verSueldos() {
   const [rg, rt, rp, rd] = await Promise.all([
     sb.from("guias").select("id,nombre,activo").order("nombre"),
     sb.from("guia_tarifas").select("id,guia_id,desde,tarifa_dia,viatico").order("desde"),
-    todas(() => sb.from("pagos_guias").select("id,guia_id,desde,hasta,dias,sueldo_usd,viatico_incluido,viatico_usd,total_usd,nota,creado").eq("anulado", false).order("hasta").order("id")),
+    todas(() => sb.from("pagos_guias").select("id,guia_id,desde,hasta,dias,sueldo_usd,viatico_incluido,viatico_ars,total_usd,nota,creado").eq("anulado", false).order("hasta").order("id")),
     todas(() => sb.from("v_dias_guia").select("guia_id,fecha,turnos,dias,tarifa_dia,monto_dia").gte("fecha", sumaDias(hoy(), -400)).lte("fecha", hasta).order("guia_id").order("fecha"))
   ]);
   if (tabActual !== "cuentas") return;
@@ -1451,14 +1453,14 @@ async function verSueldos() {
     <p class="hint">Para cada guía, lo trabajado desde el día siguiente a su último pago hasta esta fecha, según Chart Guias. Un turno es medio día.</p>
   </div>
   ${tarjetas.map(t => `<div class="card sue" data-g="${t.g.id}">
-    <div class="mov"><h3 style="margin:0">${esc(t.g.nombre)}</h3><span class="monto" data-total>${usd(t.sueldo + t.viat)}</span></div>
+    <div class="mov"><h3 style="margin:0">${esc(t.g.nombre)}</h3><span class="monto" data-total>${totalSue(t.sueldo, t.viat)}</span></div>
     <p class="meta" style="margin:2px 0 0">${t.ult ? `Pagado hasta el ${fDM(t.ult.hasta)}` : "Sin pagos registrados"}${t.tv ? ` · tarifa ${usd(t.tv.tarifa_dia)} por día` : ""}</p>
     ${!t.tv ? `<p class="err">No tiene tarifa cargada. Cargala abajo, en Tarifas.</p>` : ""}
     ${t.cambios.length ? `<p class="err">Ojo: cambió el chart en días que ya estaban pagados (${t.cambios.map(p => `${fDM(p.desde)} al ${fDM(p.hasta)}`).join(", ")}). Revisá el historial.</p>` : ""}
     ${t.ds.length ? `
       <p style="margin:10px 0 0"><b>${fmtDias(t.totDias)}</b> del ${fDM(t.desde)} al ${fDM(t.ds[t.ds.length - 1].fecha)} · sueldo ${usd(t.sueldo)}</p>
       ${t.sinTarifa.length ? `<p class="err">${t.sinTarifa.length} ${t.sinTarifa.length === 1 ? "día queda" : "días quedan"} sin monto porque no hay tarifa vigente en esa fecha.</p>` : ""}
-      ${t.viat ? `<label class="check" style="margin-top:10px"><input type="checkbox" data-viat checked><span>Incluir viático (${usd(t.viat)})</span></label>` : ""}
+      ${t.viat ? `<label class="check" style="margin-top:10px"><input type="checkbox" data-viat checked><span>Incluir viático (${pesos(t.viat)})</span></label>` : ""}
       <details class="rep"><summary>Ver detalle diario</summary><ul class="list">${t.ds.map(d => `<li><div><b>${fCorta(d.fecha)}</b>
         <span class="meta">${esc(d.turnos || "")} · ${fmtDias(Number(d.dias))}${d.tarifa_dia != null ? ` × ${usd(d.tarifa_dia)}` : ""}</span></div>
         <span class="monto">${d.monto_dia != null ? usd(d.monto_dia) : "—"}</span></li>`).join("")}</ul></details>
@@ -1466,19 +1468,19 @@ async function verSueldos() {
     : `<p class="okmsg">Al día: no tiene días pendientes hasta el ${fDM(hasta)}.</p>`}
   </div>`).join("")}
   <div class="card"><h2>Tarifas</h2>
-    <p class="hint" style="margin-top:0">Tarifa por día y viático en dólares. Si cambia, cargá la nueva con la fecha desde la que vale: lo anterior se sigue pagando con la tarifa vieja.</p>
+    <p class="hint" style="margin-top:0">Tarifa por día en dólares y viático en pesos. Si cambia, cargá la nueva con la fecha desde la que vale: lo anterior se sigue pagando con la tarifa vieja.</p>
     <ul class="list">${guias.map(g => { const tv = tarifaEn(g.id, hoy()) || tarifas.filter(t => t.guia_id === g.id).pop();
-      return `<li><div><b>${esc(g.nombre)}</b><span class="meta">${tv ? `${usd(tv.tarifa_dia)} por día${tv.viatico ? ` · viático ${usd(tv.viatico)}` : " · sin viático"} · desde ${fDM(tv.desde)}` : "Sin tarifa"}</span></div></li>`; }).join("")}</ul>
+      return `<li><div><b>${esc(g.nombre)}</b><span class="meta">${tv ? `${usd(tv.tarifa_dia)} por día${tv.viatico ? ` · viático ${pesos(tv.viatico)}` : " · sin viático"} · desde ${fDM(tv.desde)}` : "Sin tarifa"}</span></div></li>`; }).join("")}</ul>
     <label for="ta-guia">Guía</label><select id="ta-guia">${guias.map(g => `<option value="${g.id}">${esc(g.nombre)}</option>`).join("")}</select>
     <div class="row"><div><label for="ta-tar">Tarifa por día (USD)</label><input id="ta-tar" inputmode="decimal"></div>
-      <div><label for="ta-via">Viático (USD)</label><input id="ta-via" inputmode="decimal" placeholder="Vacío = no tiene"></div></div>
+      <div><label for="ta-via">Viático ($)</label><input id="ta-via" inputmode="decimal" placeholder="Vacío = no tiene"></div></div>
     <label for="ta-desde">Vale desde</label><input id="ta-desde" type="date" value="${hoy()}">
     <button class="btn" id="ta-ok">Guardar tarifa</button>
   </div>
   <div class="card"><h2>Historial de pagos</h2>
     <ul class="list">${pagos.length ? [...pagos].reverse().slice(0, 60).map(p => { const g = rg.data.find(x => x.id === p.guia_id);
-      return `<li><div><b>${esc(g ? g.nombre : "")} · ${usd(p.total_usd)}</b>
-        <span class="meta">${p.desde === p.hasta && !Number(p.dias) ? `Corte hasta el ${fDM(p.hasta)}` : `Del ${fDM(p.desde)} al ${fDM(p.hasta)} · ${fmtDias(Number(p.dias))}`}${p.viatico_incluido ? ` · con viático ${usd(p.viatico_usd)}` : ""}${p.nota ? " · " + esc(p.nota) : ""}</span></div>
+      return `<li><div><b>${esc(g ? g.nombre : "")} · ${totalSue(p.total_usd, p.viatico_incluido ? p.viatico_ars : 0)}</b>
+        <span class="meta">${p.desde === p.hasta && !Number(p.dias) ? `Corte hasta el ${fDM(p.hasta)}` : `Del ${fDM(p.desde)} al ${fDM(p.hasta)} · ${fmtDias(Number(p.dias))}`}${p.viatico_incluido ? ` · con viático ${pesos(p.viatico_ars)}` : ""}${p.nota ? " · " + esc(p.nota) : ""}</span></div>
         <button class="x" data-anular-pago="${p.id}">Anular</button></li>`; }).join("") : `<li class="empty">Todavía no hay pagos.</li>`}</ul>
     <details class="conf"><summary>Registrar un pago de corte</summary>
       <p class="hint">Si ya le pagaste a un guía antes de usar la app, marcá hasta qué fecha está pago y esos días dejan de figurar como pendientes.</p>
@@ -1492,7 +1494,7 @@ async function verSueldos() {
   sue.onchange = e => {
     if (!e.target.matches("[data-viat]")) return;
     const c = e.target.closest("[data-g]"), t = tarjetas.find(x => x.g.id === c.dataset.g);
-    c.querySelector("[data-total]").textContent = usd(t.sueldo + (e.target.checked ? t.viat : 0));
+    c.querySelector("[data-total]").textContent = totalSue(t.sueldo, e.target.checked ? t.viat : 0);
   };
   sue.onclick = async e => {
     const bp = e.target.closest("[data-pagar]");
@@ -1500,9 +1502,9 @@ async function verSueldos() {
       const c = bp.closest("[data-g]"), t = tarjetas.find(x => x.g.id === c.dataset.g);
       const cv = c.querySelector("[data-viat]"), conV = !!(cv && cv.checked);
       const ultimo = t.ds[t.ds.length - 1].fecha;
-      if (!confirm(`¿Registrar el pago a ${t.g.nombre}?\n${fmtDias(t.totDias)} del ${fDM(t.desde)} al ${fDM(ultimo)}\nSueldo ${usd(t.sueldo)}${conV ? ` + viático ${usd(t.viat)}` : ""}\nTotal ${usd(t.sueldo + (conV ? t.viat : 0))}`)) return;
+      if (!confirm(`¿Registrar el pago a ${t.g.nombre}?\n${fmtDias(t.totDias)} del ${fDM(t.desde)} al ${fDM(ultimo)}\nSueldo ${usd(t.sueldo)}${conV ? `\nViático ${pesos(t.viat)}` : ""}\nTotal ${totalSue(t.sueldo, conV ? t.viat : 0)}`)) return;
       const { error } = await sb.from("pagos_guias").insert({ guia_id: t.g.id, desde: t.desde, hasta, dias: t.totDias,
-        sueldo_usd: Math.round(t.sueldo * 100) / 100, viatico_incluido: conV, viatico_usd: conV ? t.viat : 0 });
+        sueldo_usd: Math.round(t.sueldo * 100) / 100, viatico_incluido: conV, viatico_ars: conV ? t.viat : 0, viatico_usd: 0 });
       toast(error ? "No se pudo registrar: " + error.message : "Pago registrado."); if (!error) verSueldos(); return;
     }
     const an = e.target.closest("[data-anular-pago]");
@@ -1515,7 +1517,7 @@ async function verSueldos() {
       const tarifa = num($("#ta-tar").value), via = $("#ta-via").value.trim() ? num($("#ta-via").value) : null;
       if (!tarifa) return toast("Poné la tarifa por día.");
       const { error } = await sb.from("guia_tarifas").upsert({ guia_id: $("#ta-guia").value, desde: $("#ta-desde").value || hoy(),
-        tarifa_dia: tarifa, moneda_tarifa: "USD", viatico: via, moneda_viatico: via ? "USD" : null }, { onConflict: "guia_id,desde" });
+        tarifa_dia: tarifa, moneda_tarifa: "USD", viatico: via, moneda_viatico: via ? "ARS" : null }, { onConflict: "guia_id,desde" });
       toast(error ? "No se pudo guardar: " + error.message : "Tarifa guardada."); if (!error) verSueldos(); return;
     }
     if (e.target.id === "co-ok") {
