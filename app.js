@@ -451,7 +451,7 @@ async function verDias() {
   }).join("");
   const at = store.get("misdias_at", 0);
   main.innerHTML = banner + `<div class="card">${listado || `<p class="empty">Sin días este mes.</p>`}
-    <p class="hint">Según el chart del lodge${at ? ` · actualizado ${new Date(at).toLocaleString("es-AR", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}. La línea dorada marca el inicio de cada bloque.</p></div>`;
+    <p class="hint">Según el chart del lodge${at ? ` · actualizado ${new Date(at).toLocaleString("es-AR", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""} · La línea dorada marca el inicio de cada bloque.</p></div>`;
 }
 const fmtDias = n => (n === 1 ? "1 día" : String(n).replace(".", ",") + " días");
 
@@ -624,17 +624,17 @@ async function verEquipo() {
   if (!admin) return;
   const { data: us, error } = await sb.from("perfiles").select("id,email,nombre,rol,guia_id").order("creado", { ascending: false });
   if (error) { $("#eq-users").innerHTML = `<li class="empty">${esc(error.message)}</li>`; return; }
-  const ROLES = [["pendiente", "Sin habilitar"], ["guia", "Guía"], ["jefe", "Jefe de guías"], ["house_manager", "House manager"], ["admin", "Administrador"]];
+  const ROLES = [["pendiente", "Sin habilitar"], ["guia", "Guía"], ["admin", "Jefe de guías"], ["house_manager", "House manager"]];
   $("#eq-users").innerHTML = us.map(u => `<li style="display:block" data-u="${u.id}">
     <b>${esc(u.nombre || u.email)}</b><span class="meta">${esc(u.email)}</span>
     <div class="row" style="margin-top:8px">
-      <select data-f="rol" aria-label="Rol">${ROLES.map(([v, n]) => `<option value="${v}" ${u.rol === v ? "selected" : ""}>${n}</option>`).join("")}</select>
+      <select data-f="rol" aria-label="Rol">${ROLES.map(([v, n]) => `<option value="${v}" ${(u.rol === "jefe" ? "admin" : u.rol) === v ? "selected" : ""}>${n}</option>`).join("")}</select>
       <select data-f="guia_id" aria-label="Guía">${[`<option value="">No es guía</option>`, ...gs.map(g => `<option value="${g.id}" ${u.guia_id === g.id ? "selected" : ""}>${esc(g.nombre)}</option>`)].join("")}</select>
     </div></li>`).join("");
   $("#eq-users").onchange = async e => {
     const li = e.target.closest("[data-u]"); const f = e.target.dataset.f; if (!li || !f) return;
     const val = e.target.value || null;
-    if (li.dataset.u === perfil.id && f === "rol" && val !== "admin" && !confirm("Te vas a quitar el rol de administrador. ¿Seguro?")) { e.target.value = "admin"; return; }
+    if (li.dataset.u === perfil.id && f === "rol" && val !== "admin" && !confirm("Te vas a quitar el perfil de jefe de guías y ya no vas a poder habilitar cuentas. ¿Seguro?")) { e.target.value = "admin"; return; }
     const { error } = await sb.from("perfiles").update({ [f]: val }).eq("id", li.dataset.u);
     toast(error ? "No se pudo guardar: " + error.message : "Guardado.");
     if (!error && li.dataset.u === perfil.id) cargarPerfil({ id: perfil.id });
