@@ -1110,36 +1110,54 @@ function sumarMonedas(lista) {   // [{moneda, monto}] → texto "USD 10 + $ 500"
   return Object.keys(t).length ? Object.entries(t).map(([m, n]) => plata(m, n)).join(" + ") : plata("USD", 0);
 }
 
+/* ---- Cuenta corriente (cálculo compartido) ---- */
+// disponible = efectivo + tarjeta ya cobrada · saldo = disponible + ajustes − pagos
+function cuentaCorriente(reparto, movs) {
+  const c = {};   // guia_id → { nombre, mon: { USD: {disp, xcob, pag, aj} } }
+  const mon = (g, nombre, m) => { const x = (c[g] ||= { nombre, mon: {} }); if (nombre) x.nombre = nombre; return (x.mon[m] ||= { disp: 0, xcob: 0, pag: 0, aj: 0 }); };
+  reparto.forEach(r => { const p = r.propinas; if (!p || p.anulada || !r.guia_id) return;
+    const t = mon(r.guia_id, r.nombre, p.moneda);
+    t.disp += Number(r.monto_efectivo) + (p.tarjeta_pagada ? Number(r.monto_tarjeta) : 0);
+    if (!p.tarjeta_pagada) t.xcob += Number(r.monto_tarjeta); });
+  movs.forEach(m => { if (m.anulado) return; const t = mon(m.guia_id, null, m.moneda);
+    if (m.tipo === "pago") t.pag += Number(m.monto); else t.aj += Number(m.monto); });
+  Object.values(c).forEach(x => Object.values(x.mon).forEach(t => t.saldo = Math.round((t.disp + t.aj - t.pag) * 100) / 100));
+  return c;
+}
+const saldoTxt = mon => { const e = Object.entries(mon).filter(([, t]) => Math.abs(t.saldo) >= 0.005); return e.length ? e.map(([m, t]) => plata(m, t.saldo)).join(" + ") : plata("USD", 0); };
+const xcobTxt = mon => Object.entries(mon).filter(([, t]) => t.xcob > 0.004).map(([m, t]) => plata(m, t.xcob)).join(" + ");
+
 /* ---- Guía: mis propinas ---- */
 async function verMisPropinas() {
-  main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "propinas") + `<p class="loading">Cargando…</p>`;
-  activarSeg("dias_modo", verDias);
-  let filas = store.get("mispropinas", null);
+  const cab = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "propinas");
+  main.innerHTML = cab + `<p class="loading">Cargando…</p>`; activarSeg("dias_modo", verDias);
+  let datos = store.get("mispropinas2", null);
   if (online()) {
-    const { data, error } = await sb.from("propina_reparto")
-      .select("sesiones,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)")
-      .eq("guia_id", perfil.guia_id);
-    if (!error && data) { filas = data.filter(r => r.propinas && !r.propinas.anulada); store.set("mispropinas", filas); }
+    const [rr, rm] = await Promise.all([
+      sb.from("propina_reparto").select("guia_id,nombre,sesiones,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)").eq("guia_id", perfil.guia_id),
+      sb.from("propina_movimientos").select("id,fecha,tipo,moneda,monto,nota,anulado").eq("guia_id", perfil.guia_id).eq("anulado", false)
+    ]);
+    if (!rr.error && !rm.error) { datos = { rep: rr.data.filter(r => r.propinas && !r.propinas.anulada), movs: rm.data }; store.set("mispropinas2", datos); }
   }
   if (tabActual !== "dias" || store.get("dias_modo") !== "propinas") return;
-  const cab = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "propinas");
-  if (!filas) { main.innerHTML = cab + `<div class="card"><p class="empty">Abrí esta pestaña con señal una vez.</p></div>`; activarSeg("dias_modo", verDias); return; }
-  filas.sort((a, b) => b.propinas.fecha.localeCompare(a.propinas.fecha));
-  const efe = filas.map(r => ({ moneda: r.propinas.moneda, monto: r.monto_efectivo }));
-  const tPag = filas.filter(r => r.propinas.tarjeta_pagada).map(r => ({ moneda: r.propinas.moneda, monto: r.monto_tarjeta }));
-  const tPen = filas.filter(r => !r.propinas.tarjeta_pagada).map(r => ({ moneda: r.propinas.moneda, monto: r.monto_tarjeta }));
-  const hayPen = tPen.some(x => Number(x.monto) > 0);
+  if (!datos) { main.innerHTML = cab + `<div class="card"><p class="empty">Abrí esta pestaña con señal una vez.</p></div>`; activarSeg("dias_modo", verDias); return; }
+  const cc = cuentaCorriente(datos.rep, datos.movs)[perfil.guia_id] || { mon: {} };
+  const xc = xcobTxt(cc.mon);
+  // movimientos: propinas (+) y pagos (−), del más nuevo al más viejo
+  const items = [
+    ...datos.rep.map(r => ({ fecha: r.propinas.fecha, html: (() => { const p = r.propinas;
+      const ses = Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 });
+      return `<li style="display:block"><div class="mov"><b>${esc(p.clientes || p.grupo)}</b><span class="monto mas">+ ${plata(p.moneda, Number(r.monto_efectivo) + Number(r.monto_tarjeta))}</span></div>
+        <span class="meta">${esc(p.grupo)} · ${fCorta(p.fecha)} · trabajaste ${ses} de ${p.sesiones} ${p.sesiones === 1 ? "sesión" : "sesiones"}</span>
+        ${Number(r.monto_tarjeta) && !p.tarjeta_pagada ? `<span class="meta" style="display:block">Incluye ${plata(p.moneda, r.monto_tarjeta)} de tarjeta que el lodge todavía no cobró</span>` : ""}</li>`; })() })),
+    ...datos.movs.map(m => ({ fecha: m.fecha, html: `<li style="display:block"><div class="mov"><b>${m.tipo === "pago" ? "Pago recibido" : "Ajuste"}</b>
+      <span class="monto ${m.tipo === "pago" || m.monto < 0 ? "menos" : "mas"}">${m.tipo === "pago" ? "− " + plata(m.moneda, m.monto) : (m.monto < 0 ? "− " : "+ ") + plata(m.moneda, Math.abs(m.monto))}</span></div>
+      <span class="meta">${fCorta(m.fecha)}${m.nota ? " · " + esc(m.nota) : ""}</span></li>` }))
+  ].sort((a, b) => b.fecha.localeCompare(a.fecha));
   main.innerHTML = cab + `
-  <div class="prox"><small>Total de propinas</small><strong>${sumarMonedas([...efe, ...tPag, ...tPen])}</strong>
-    <span>Efectivo ${sumarMonedas(efe)}${tPag.some(x => Number(x.monto) > 0) ? ` · Tarjeta cobrada ${sumarMonedas(tPag)}` : ""}${hayPen ? ` · Tarjeta pendiente ${sumarMonedas(tPen)}` : ""}</span></div>
-  <div class="card"><h2>Detalle</h2>${filas.length ? `<ul class="list">${filas.map(r => {
-    const p = r.propinas;
-    const ses = Number(r.sesiones).toLocaleString("es-AR", { maximumFractionDigits: 2 });
-    return `<li style="display:block"><b>${esc(p.clientes || p.grupo)}</b>
-      <span class="meta">${esc(p.grupo)} · ${fCorta(p.fecha)} · trabajaste ${ses} de ${p.sesiones} ${p.sesiones === 1 ? "sesión" : "sesiones"}</span>
-      <div class="montos">${Number(r.monto_efectivo) ? `<span>Efectivo <b>${plata(p.moneda, r.monto_efectivo)}</b></span>` : ""}
-        ${Number(r.monto_tarjeta) ? `<span>Tarjeta <b>${plata(p.moneda, r.monto_tarjeta)}</b> <em class="${p.tarjeta_pagada ? "si" : "pend"}">${p.tarjeta_pagada ? "cobrada" : "pendiente"}</em></span>` : ""}</div></li>`;
-  }).join("")}</ul>` : `<p class="empty">Todavía no tenés propinas cargadas.</p>`}
+  <div class="prox"><small>Te deben de propinas</small><strong>${saldoTxt(cc.mon)}</strong>
+    ${xc ? `<span>Además, ${xc} de tarjeta que el lodge todavía no cobró</span>` : `<span>Se acumula hasta que el jefe de guías te lo paga</span>`}</div>
+  <div class="card"><h2>Movimientos</h2>${items.length ? `<ul class="list">${items.map(i => i.html).join("")}</ul>` : `<p class="empty">Todavía no tenés propinas cargadas.</p>`}
   <p class="hint">Cada propina se reparte entre las sesiones de pesca del grupo, y cada sesión entre los guías de ese turno.</p></div>`;
   activarSeg("dias_modo", verDias);
 }
@@ -1251,13 +1269,7 @@ async function pintarHistorialPropinas() {
     .eq("anulada", false).gte("fecha", sumaDias(hoy(), -120)).order("fecha", { ascending: false }).order("creado", { ascending: false });
   const ul = $("#pr-hist"); if (!ul) return;
   if (error) { ul.innerHTML = `<li class="empty">${esc(error.message)}</li>`; return; }
-  // Tarjeta pendiente por guía
-  const pen = {};
-  data.filter(p => !p.tarjeta_pagada && Number(p.tarjeta)).forEach(p => p.propina_reparto.forEach(r => {
-    (pen[r.nombre] ||= []).push({ moneda: p.moneda, monto: r.monto_tarjeta });
-  }));
-  $("#pr-pend").innerHTML = Object.keys(pen).length ? `<div class="card"><h2>Tarjeta pendiente de pagar</h2>
-    <ul class="list">${Object.entries(pen).map(([n, it]) => `<li><b>${esc(n)}</b><span class="monto">${sumarMonedas(it)}</span></li>`).join("")}</ul></div>` : "";
+  pintarCuentaCorriente();
   ul.innerHTML = data.length ? data.map(p => `<li style="display:block" data-p="${p.id}">
     <div style="display:flex;justify-content:space-between;gap:10px"><div><b>${esc(p.grupo)}</b><span class="meta" style="display:block">${esc(p.clientes || "")}</span>
       <span class="meta" style="display:block">${fCorta(p.fecha)} · ${p.sesiones} sesiones · efectivo ${plata(p.moneda, p.efectivo)} · tarjeta ${plata(p.moneda, p.tarjeta)}</span></div>
@@ -1265,19 +1277,91 @@ async function pintarHistorialPropinas() {
     <details class="rep"><summary>Ver reparto</summary><ul class="list">${p.propina_reparto.sort((a, b) => (Number(b.monto_efectivo) + Number(b.monto_tarjeta)) - (Number(a.monto_efectivo) + Number(a.monto_tarjeta))).map(r =>
       `<li><span>${esc(r.nombre)}</span><span class="monto">${plata(p.moneda, Number(r.monto_efectivo) + Number(r.monto_tarjeta))}</span></li>`).join("")}</ul></details>
     <div class="acciones" style="margin-top:8px;justify-content:flex-start">
-      ${Number(p.tarjeta) && !p.tarjeta_pagada ? `<button class="btn small" data-pagar="${p.id}">Marcar tarjeta como pagada</button>` : Number(p.tarjeta) ? `<span class="estado si">Tarjeta pagada</span>` : ""}
+      ${Number(p.tarjeta) && !p.tarjeta_pagada ? `<button class="btn small" data-pagar="${p.id}">Marcar tarjeta como cobrada</button>` : Number(p.tarjeta) ? `<span class="estado si">Tarjeta cobrada</span>` : ""}
       <button class="btn small danger" data-anular="${p.id}">Anular</button></div></li>`).join("")
     : `<li class="empty">Todavía no hay propinas cargadas.</li>`;
   ul.onclick = async e => {
     const pg = e.target.closest("[data-pagar]"), an = e.target.closest("[data-anular]");
     if (pg) {
-      if (!confirm("¿Marcar como pagada la parte con tarjeta de esta propina?")) return;
+      if (!confirm("¿El lodge ya cobró la parte con tarjeta de esta propina? Pasa a estar disponible para pagar a los guías.")) return;
       const { error } = await sb.from("propinas").update({ tarjeta_pagada: true, tarjeta_pagada_en: new Date().toISOString() }).eq("id", pg.dataset.pagar);
-      toast(error ? error.message : "Marcada como pagada."); pintarHistorialPropinas();
+      toast(error ? error.message : "Tarjeta marcada como cobrada."); pintarHistorialPropinas();
     } else if (an) {
       if (!confirm("¿Anular esta propina? Deja de figurar para los guías.")) return;
       const { error } = await sb.from("propinas").update({ anulada: true }).eq("id", an.dataset.anular);
       toast(error ? error.message : "Propina anulada."); pintarHistorialPropinas();
+    }
+  };
+}
+
+async function pintarCuentaCorriente() {
+  const box = $("#pr-pend"); if (!box) return;
+  const [rr, rm, rg] = await Promise.all([
+    sb.from("propina_reparto").select("guia_id,nombre,monto_efectivo,monto_tarjeta,propinas(moneda,tarjeta_pagada,anulada)").not("guia_id", "is", null),
+    sb.from("propina_movimientos").select("id,guia_id,fecha,tipo,moneda,monto,nota,anulado").eq("anulado", false).order("fecha", { ascending: false }),
+    sb.from("guias").select("id,nombre").eq("activo", true).order("nombre")
+  ]);
+  if (rr.error || rm.error) { box.innerHTML = `<div class="card"><p class="err">${esc((rr.error || rm.error).message)}</p></div>`; return; }
+  const cc = cuentaCorriente(rr.data, rm.data);
+  (rg.data || []).forEach(g => { (cc[g.id] ||= { nombre: g.nombre, mon: {} }).nombre = g.nombre; });
+  const filas = Object.entries(cc).sort((a, b) => a[1].nombre.localeCompare(b[1].nombre));
+  const billete = m => (m === "ARS" ? 1000 : 10);
+  box.innerHTML = `<div class="card"><h2>Cuenta corriente</h2>
+    <p class="hint" style="margin-top:0">Lo que se le debe a cada guía: efectivo y tarjeta ya cobrada, menos lo que le pagaste. Podés pagar un monto redondo y el resto queda a favor del guía.</p>
+    <ul class="list">${filas.map(([gid, x]) => { const xc = xcobTxt(x.mon); return `<li style="display:block" data-g="${gid}">
+      <div class="mov"><b>${esc(x.nombre)}</b><span class="monto">${saldoTxt(x.mon)}</span></div>
+      ${xc ? `<span class="meta">Tarjeta por cobrar: ${xc}</span>` : ""}
+      <div class="acciones" style="justify-content:flex-start;margin-top:6px">
+        <button class="btn small" data-accion="pagar">Registrar pago</button>
+        <button class="btn small secondary" data-accion="movs">Movimientos</button></div>
+      <div class="sub" data-sub hidden></div></li>`; }).join("")}</ul></div>`;
+  box.onclick = async e => {
+    const li = e.target.closest("[data-g]"); if (!li) return;
+    const gid = li.dataset.g, x = cc[gid], sub = li.querySelector("[data-sub]");
+    const acc = e.target.closest("[data-accion]");
+    if (acc && acc.dataset.accion === "pagar") {
+      const mons = Object.keys(x.mon).length ? Object.keys(x.mon) : ["USD"];
+      const m0 = mons.find(m => x.mon[m] && x.mon[m].saldo > 0) || mons[0];
+      const sug = m => { const t = x.mon[m]; return t && t.saldo > 0 ? Math.floor(t.saldo / billete(m)) * billete(m) : ""; };
+      sub.hidden = false;
+      sub.innerHTML = `<label>Tipo</label><select data-f="tipo">
+          <option value="pago">Pago al guía</option><option value="mas">Ajuste: se le debe más</option><option value="menos">Ajuste: se le debe menos</option></select>
+        <div class="row"><div><label>Monto</label><input data-f="monto" inputmode="decimal" value="${sug(m0)}"></div>
+        <div><label>Moneda</label><select data-f="moneda">${["USD", "ARS"].map(m => `<option value="${m}" ${m === m0 ? "selected" : ""}>${m === "USD" ? "USD" : "$"}</option>`).join("")}</select></div></div>
+        <label>Fecha</label><input data-f="fecha" type="date" value="${hoy()}">
+        <label>Nota</label><input data-f="nota" placeholder="Opcional (ej.: saldo de la temporada pasada)">
+        <p class="hint" data-resto></p>
+        <button class="btn" data-accion="guardar">Guardar</button>`;
+      const resto = () => { const m = sub.querySelector('[data-f="moneda"]').value, t = x.mon[m] || { saldo: 0 }, tipo = sub.querySelector('[data-f="tipo"]').value;
+        const v = num(sub.querySelector('[data-f="monto"]').value);
+        const queda = tipo === "pago" ? t.saldo - v : tipo === "mas" ? t.saldo + v : t.saldo - v;
+        sub.querySelector("[data-resto]").textContent = `Saldo actual ${plata(m, t.saldo)} → queda ${plata(m, Math.round(queda * 100) / 100)}`; };
+      sub.oninput = resto; sub.onchange = e2 => { if (e2.target.dataset.f === "moneda" && sub.querySelector('[data-f="tipo"]').value === "pago") sub.querySelector('[data-f="monto"]').value = sug(e2.target.value); resto(); };
+      resto();
+      return;
+    }
+    if (acc && acc.dataset.accion === "guardar") {
+      const v = f => sub.querySelector(`[data-f="${f}"]`).value;
+      const monto = num(v("monto")); if (!monto) return toast("Poné el monto.");
+      const tipo = v("tipo");
+      const { error } = await sb.from("propina_movimientos").insert({ guia_id: gid, fecha: v("fecha") || hoy(), moneda: v("moneda"),
+        tipo: tipo === "pago" ? "pago" : "ajuste", monto: tipo === "menos" ? -monto : monto, nota: v("nota").trim() || null });
+      if (error) return toast("No se pudo guardar: " + error.message);
+      toast(tipo === "pago" ? "Pago registrado." : "Ajuste registrado."); pintarCuentaCorriente(); return;
+    }
+    if (acc && acc.dataset.accion === "movs") {
+      sub.hidden = false;
+      const ms = rm.data.filter(m => m.guia_id === gid);
+      sub.innerHTML = ms.length ? `<ul class="list">${ms.map(m => `<li><div><b>${m.tipo === "pago" ? "Pago" : "Ajuste"} · ${m.tipo === "pago" ? plata(m.moneda, m.monto) : (m.monto < 0 ? "− " : "+ ") + plata(m.moneda, Math.abs(m.monto))}</b>
+        <span class="meta">${fCorta(m.fecha)}${m.nota ? " · " + esc(m.nota) : ""}</span></div><button class="x" data-anular-mov="${m.id}">Anular</button></li>`).join("")}</ul>`
+        : `<p class="hint">Todavía no hay pagos ni ajustes. Las propinas de cada grupo están en el historial.</p>`;
+      return;
+    }
+    const an = e.target.closest("[data-anular-mov]");
+    if (an) {
+      if (!confirm("¿Anular este movimiento?")) return;
+      const { error } = await sb.from("propina_movimientos").update({ anulado: true }).eq("id", an.dataset.anularMov);
+      toast(error ? error.message : "Movimiento anulado."); pintarCuentaCorriente();
     }
   };
 }
