@@ -441,16 +441,28 @@ function pintarCola(n) {
    ===================================================================== */
 async function verDias() {
   if (store.get("dias_modo", "dias") === "propinas") return verMisPropinas();
-  main.innerHTML = `<p class="loading">Cargando tus días…</p>`;
-  let filas = store.get("misdias", null);
+  main.innerHTML = `<p class="loading">Cargando días…</p>`;
+  // El jefe de guías puede ver los días de cualquier guía
+  const gid = esJefe() ? store.get("dias_guia", perfil.guia_id) || perfil.guia_id : perfil.guia_id;
+  const propio = gid === perfil.guia_id;
+  const ck = propio ? "misdias" : "dias_" + gid;
+  let filas = store.get(ck, null);
+  let selector = "";
+  if (esJefe()) {
+    let gs = store.get("guias_cache", []);
+    if (online()) { const { data } = await sb.from("guias").select("id,nombre").eq("activo", true).order("nombre"); if (data) { gs = data; store.set("guias_cache", data); } }
+    selector = `<div class="card" style="padding:12px 18px"><label for="d-guia" style="margin-top:0">Ver los días de</label>
+      <select id="d-guia">${gs.map(g => `<option value="${g.id}" ${g.id === gid ? "selected" : ""}>${esc(g.nombre)}${g.id === perfil.guia_id ? " (vos)" : ""}</option>`).join("")}</select></div>`;
+  }
   if (online()) {
     const desde = hoy().slice(0, 8) + "01";
     const { data, error } = await sb.from("v_dias_guia").select("fecha,turnos,dias,inicia_bloque")
-      .eq("guia_id", perfil.guia_id).gte("fecha", sumaDias(desde, -31)).order("fecha");
-    if (!error && data) { filas = data; store.set("misdias", data); store.set("misdias_at", Date.now()); }
+      .eq("guia_id", gid).gte("fecha", sumaDias(desde, -31)).order("fecha");
+    if (!error && data) { filas = data; store.set(ck, data); store.set(ck + "_at", Date.now()); }
   }
   if (tabActual !== "dias") return;
-  if (!filas) { main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "dias") + `<div class="card"><p class="empty">Abrí esta pestaña con señal una vez para guardar tus días.</p></div>`; activarSeg("dias_modo", verDias); return; }
+  const activarGuia = () => { const sel = $("#d-guia"); if (sel) sel.onchange = () => { store.set("dias_guia", sel.value); verDias(); }; };
+  if (!filas) { main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "dias") + selector + `<div class="card"><p class="empty">Abrí esta pestaña con señal una vez para guardar los días.</p></div>`; activarSeg("dias_modo", verDias); activarGuia(); return; }
 
   // Bloques de guiadas
   const bloques = [];
@@ -459,11 +471,11 @@ async function verDias() {
   const actual = bloques.find(b => b.inicio <= h && b.fin >= h);
   const prox = bloques.find(b => b.inicio > h);
   let banner = "";
-  if (actual) banner = `<div class="prox"><small>Estás en un bloque de guiadas</small><strong>Hasta el ${fCorta(actual.fin)}</strong><span>Del ${fDM(actual.inicio)} al ${fDM(actual.fin)} · ${fmtDias(actual.dias)}</span></div>`;
+  if (actual) banner = `<div class="prox"><small>${propio ? "Estás en un bloque de guiadas" : "En un bloque de guiadas"}</small><strong>Hasta el ${fCorta(actual.fin)}</strong><span>Del ${fDM(actual.inicio)} al ${fDM(actual.fin)} · ${fmtDias(actual.dias)}</span></div>`;
   else if (prox) {
     const d = new Date(prox.inicio + "T12:00:00");
     banner = `<div class="prox"><small>Próximo bloque</small><strong>${DIAS_L[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]}</strong><span>Del ${fDM(prox.inicio)} al ${fDM(prox.fin)} · ${fmtDias(prox.dias)}</span></div>`;
-  } else banner = `<div class="card"><p class="empty" style="padding:8px 0">No tenés días asignados por delante.</p></div>`;
+  } else banner = `<div class="card"><p class="empty" style="padding:8px 0">${propio ? "No tenés" : "No tiene"} días asignados por delante.</p></div>`;
   if (actual && prox) banner += `<div class="card"><b>Después:</b> del ${fDM(prox.inicio)} al ${fDM(prox.fin)} · ${fmtDias(prox.dias)}</div>`;
 
   // Por mes, desde el mes actual
@@ -479,10 +491,10 @@ async function verDias() {
       return `<li class="${cl}"><b>${fCorta(f.fecha)}</b><span class="turnos"><span class="${/AM/.test(t) ? "on" : ""}">AM</span><span class="${/PM/.test(t) ? "on" : ""}">PM</span></span></li>`;
     }).join("")}</ul></div>`;
   }).join("");
-  const at = store.get("misdias_at", 0);
-  main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "dias") + banner + `<div class="card">${listado || `<p class="empty">Sin días este mes.</p>`}
+  const at = store.get(ck + "_at", 0);
+  main.innerHTML = seg("dias_modo", [["dias", "Mis días"], ["propinas", "Mis propinas"]], "dias") + selector + banner + `<div class="card">${listado || `<p class="empty">Sin días este mes.</p>`}
     <p class="hint">Según el chart del lodge${at ? ` · actualizado ${new Date(at).toLocaleString("es-AR", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""} · La línea dorada marca el inicio de cada bloque.</p></div>`;
-  activarSeg("dias_modo", verDias);
+  activarSeg("dias_modo", verDias); activarGuia();
 }
 const fmtDias = n => (n === 1 ? "1 día" : String(n).replace(".", ",") + " días");
 
@@ -870,7 +882,8 @@ async function verCuentas() {
   if (rc.error || re.error) { main.innerHTML = `<div class="card"><p class="err">${esc((rc.error || re.error).message)}</p></div>`; return; }
   ctaEntregas = re.data;
   const conEntregas = new Set(ctaEntregas.map(e => e.cliente_id));
-  ctaClientes = rc.data.filter(c => conEntregas.has(c.id) || c.fin >= hoy());
+  const verTerm = store.get("cta_term", false);
+  ctaClientes = rc.data.filter(c => verTerm || conEntregas.has(c.id) || c.fin >= hoy());
   ctaSel = new Set([...ctaSel].filter(id => ctaClientes.some(c => c.id === id)));
   const grupos = [...new Set(ctaClientes.map(c => c.grupo).filter(Boolean))];
   main.innerHTML = (esJefe() ? seg("cta_modo", [["clientes", "Clientes"], ["propinas", "Propinas"]], "clientes") : "") + `
@@ -880,10 +893,12 @@ async function verCuentas() {
       ${grupos.map(g => `<button class="chip" data-atajo="g:${esc(g)}">${esc(g)}</button>`).join("")}
       <button class="chip" data-atajo="nada">Limpiar</button>
     </div>
+    <label class="check" style="margin-top:12px"><input type="checkbox" id="cta-term" ${verTerm ? "checked" : ""}><span>Mostrar también los que ya terminaron su estadía (último mes)</span></label>
     <ul class="list checks" id="cta-lista" style="margin-top:10px"></ul>
   </div>
   <div id="cta-detalle"></div>`;
   activarSeg("cta_modo", verCuentas);
+  $("#cta-term").onchange = e => { store.set("cta_term", e.target.checked); verCuentas(); };
   pintarCtaLista(); pintarCtaDetalle();
   main.querySelector(".chips").onclick = e => {
     const b = e.target.closest("[data-atajo]"); if (!b) return;
@@ -907,7 +922,7 @@ function pintarCtaLista() {
   $("#cta-lista").innerHTML = ctaClientes.length ? ctaClientes.map(c => {
     const n = ctaEntregas.filter(e => e.cliente_id === c.id).length;
     return `<li><label class="check"><input type="checkbox" data-c="${c.id}" ${ctaSel.has(c.id) ? "checked" : ""}>
-      <span><b>${esc(c.nombre)}</b><span class="meta">${esc(c.grupo || "")} · se va el ${fDM(c.fin)} · ${n ? n + (n === 1 ? " entrega" : " entregas") : "sin entregas"}</span></span></label></li>`;
+      <span><b>${esc(c.nombre)}</b><span class="meta">${esc(c.grupo || "")} · ${c.fin < hoy() ? "se fue" : "se va"} el ${fDM(c.fin)} · ${n ? n + (n === 1 ? " entrega" : " entregas") : "sin entregas"}</span></span></label></li>`;
   }).join("") : `<li class="empty">No hay clientes recientes.</li>`;
 }
 function pintarCtaDetalle() {
