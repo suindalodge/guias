@@ -190,6 +190,14 @@ nav.tabs button[aria-selected="true"]{background:var(--river);color:var(--on-riv
 .guia-det{font-weight:700;color:var(--river);margin:10px 0 0}
 h2 .meta{font-family:"Barlow",sans-serif;font-size:1rem;text-transform:none}
 
+/* Equipo */
+.acciones{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+details.conf{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+details.conf summary{cursor:pointer;font-weight:600;color:var(--river)}
+details.conf input{box-sizing:border-box;width:100%}
+.ch-res{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.ch-res .list li{padding:8px 0}
+
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:600;font-size:.95rem;z-index:30;max-width:90vw;text-align:center}
 @media (prefers-reduced-motion: no-preference){ .toast{animation:sube .2s ease-out} @keyframes sube{from{opacity:0;transform:translate(-50%,8px)}} }
 </style>

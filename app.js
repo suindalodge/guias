@@ -624,16 +624,21 @@ async function subirLicencia(cliente, file) {
 async function verEquipo() {
   const admin = perfil.rol === "admin";
   main.innerHTML = `
+  <div class="card"><h2>Chart del lodge</h2>
+    <p class="hint" style="margin-top:0" id="ch-ult">Los turnos y los clientes se actualizan solos cada hora.</p>
+    <button class="btn" id="ch-ok">Actualizar desde el chart</button>
+    <div id="ch-res"></div>
+    ${admin ? `<details class="conf"><summary>Configurar la conexión</summary>
+      <label for="ch-url">Link del puente (aplicación web del chart)</label>
+      <input id="ch-url" placeholder="https://script.google.com/macros/s/…/exec">
+      <p class="hint">Se pega una sola vez. Sale de Apps Script del chart → Implementar → Aplicación web.</p></details>` : ""}
+  </div>
   <div class="card"><h2>Guías</h2>
     <ul class="list" id="eq-guias"><li class="empty">Cargando…</li></ul>
+    <button class="btn secondary" id="inv-gen">Invitar a alguien por WhatsApp</button>
     <label for="g-nombre">Nuevo guía</label><input id="g-nombre" placeholder="Nombre (ej.: Pablo)">
     <label for="g-chart">Cómo figura en Chart Guias</label><input id="g-chart" placeholder="Ej.: PABLO" style="text-transform:uppercase">
     <button class="btn" id="g-ok">Agregar guía</button>
-  </div>
-  <div class="card"><h2>Supervisor</h2>
-    <label for="sup-wa">WhatsApp del supervisor</label>
-    <input id="sup-wa" inputmode="tel" placeholder="Ej.: 5493794123456">
-    <p class="hint">Con código de país y sin el 15. Se usa para enviarle el resumen de capturas.</p>
   </div>
   <div class="card"><h2>Artículos</h2>
     <p class="hint" style="margin-top:0">Lo que los guías entregan a los clientes. El precio lo ven solo el jefe de guías y el house manager. Si cambiás un precio, las entregas anteriores mantienen el suyo.</p>
@@ -647,34 +652,35 @@ async function verEquipo() {
     <ul class="list" id="eq-users"><li class="empty">Cargando…</li></ul></div>` : ""}`;
   if (!online()) { main.insertAdjacentHTML("afterbegin", `<div class="offline">Para editar el equipo hace falta señal.</div>`); return; }
   pintarArticulosEquipo();
-  sb.from("config").select("valor").eq("clave", "whatsapp_supervisor").maybeSingle().then(({ data }) => {
-    const inp = $("#sup-wa"); if (!inp) return;
-    inp.value = data && data.valor || "";
-    inp.onchange = async () => {
-      const { error } = await sb.from("config").upsert({ clave: "whatsapp_supervisor", valor: inp.value.replace(/\D/g, "") });
-      toast(error ? "No se pudo guardar: " + error.message : "Número guardado.");
-    };
-  });
-  const { data: guias } = await sb.from("guias").select("id,nombre,nombre_chart,activo").order("nombre");
-  const gs = guias || [];
-  $("#eq-guias").innerHTML = gs.length ? gs.map(g => `<li><div><b>${esc(g.nombre)}</b><span class="meta">En el chart: ${esc(g.nombre_chart)}</span></div>
-    <button class="btn small secondary" data-act="${g.id}">${g.activo ? "Activo" : "Inactivo"}</button></li>`).join("") : `<li class="empty">Todavía no hay guías.</li>`;
+  prepararChart(admin);
+  $("#inv-gen").onclick = () => invitar("");
+
+  const [{ data: guias }, rus] = await Promise.all([
+    sb.from("guias").select("id,nombre,nombre_chart,activo").order("nombre"),
+    admin ? sb.from("perfiles").select("id,email,nombre,rol,guia_id").order("creado", { ascending: false }) : Promise.resolve({ data: null })
+  ]);
+  const gs = guias || [], us = rus.data;
+  const conCuenta = new Set((us || []).map(u => u.guia_id).filter(Boolean));
+  $("#eq-guias").innerHTML = gs.length ? gs.map(g => `<li><div><b>${esc(g.nombre)}</b><span class="meta">En el chart: ${esc(g.nombre_chart)}${us ? (conCuenta.has(g.id) ? " · tiene cuenta" : " · sin cuenta") : ""}</span></div>
+    <span class="acciones">${us && !conCuenta.has(g.id) && g.activo ? `<button class="btn small" data-inv="${g.id}">Invitar</button>` : ""}
+    <button class="btn small secondary" data-act="${g.id}">${g.activo ? "Activo" : "Inactivo"}</button></span></li>`).join("") : `<li class="empty">Todavía no hay guías.</li>`;
   $("#eq-guias").onclick = async e => {
+    const inv = e.target.closest("[data-inv]");
+    if (inv) return invitar(gs.find(x => x.id === inv.dataset.inv).nombre);
     const b = e.target.closest("[data-act]"); if (!b) return;
     const g = gs.find(x => x.id === b.dataset.act);
     const { error } = await sb.from("guias").update({ activo: !g.activo }).eq("id", g.id);
     if (error) return toast(error.message); verEquipo();
   };
   $("#g-ok").onclick = async () => {
-    const nombre = $("#g-nombre").value.trim(), chart = $("#g-chart").value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+    const nombre = $("#g-nombre").value.trim(), chart = normChart($("#g-chart").value);
     if (!nombre || !chart) return toast("Completá el nombre y cómo figura en el chart.");
     const { error } = await sb.from("guias").insert({ nombre, nombre_chart: chart });
     if (error) return toast(/duplicate/i.test(error.message) ? "Ya hay un guía con ese nombre en el chart." : error.message);
     toast("Guía agregado."); verEquipo();
   };
   if (!admin) return;
-  const { data: us, error } = await sb.from("perfiles").select("id,email,nombre,rol,guia_id").order("creado", { ascending: false });
-  if (error) { $("#eq-users").innerHTML = `<li class="empty">${esc(error.message)}</li>`; return; }
+  if (!us) { $("#eq-users").innerHTML = `<li class="empty">${esc(rus.error ? rus.error.message : "No se pudieron leer los usuarios.")}</li>`; return; }
   const ROLES = [["pendiente", "Sin habilitar"], ["guia", "Guía"], ["admin", "Jefe de guías"], ["house_manager", "House manager"]];
   $("#eq-users").innerHTML = us.map(u => `<li style="display:block" data-u="${u.id}">
     <b>${esc(u.nombre || u.email)}</b><span class="meta">${esc(u.email)}</span>
@@ -689,7 +695,67 @@ async function verEquipo() {
     const { error } = await sb.from("perfiles").update({ [f]: val }).eq("id", li.dataset.u);
     toast(error ? "No se pudo guardar: " + error.message : "Guardado.");
     if (!error && li.dataset.u === perfil.id) cargarPerfil({ id: perfil.id });
+    if (!error && f === "guia_id") verEquipo();
   };
+}
+const normChart = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+
+function invitar(nombre) {
+  const link = location.origin + location.pathname;
+  const t = `Hola${nombre ? " " + nombre : ""}! Te paso la app de guías de Suindá para cargar capturas, entregas y ver tus días:\n${link}\n\n` +
+    `1. Abrila y tocá «Crear una cuenta nueva» con tu mail y una contraseña.\n` +
+    `2. Avisame cuando la tengas, así te habilito.\n` +
+    `3. Instalala en el celu: en Chrome, menú ⋮ → «Agregar a la pantalla principal». En iPhone, Safari → Compartir → «Agregar a inicio».`;
+  window.open("https://wa.me/?text=" + encodeURIComponent(t), "_blank");
+}
+
+async function prepararChart(admin) {
+  const { data } = await sb.from("config").select("clave,valor").in("clave", ["puente_url", "ultima_importacion"]);
+  const conf = Object.fromEntries((data || []).map(x => [x.clave, x.valor]));
+  const ult = $("#ch-ult"); if (!ult) return;
+  if (conf.ultima_importacion) ult.textContent = "Última actualización: " + new Date(conf.ultima_importacion).toLocaleString("es-AR", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" }) + ". Se actualiza sola cada hora.";
+  const inp = $("#ch-url");
+  if (inp) {
+    inp.value = conf.puente_url || "";
+    if (!conf.puente_url) inp.closest("details").open = true;
+    inp.onchange = async () => {
+      const v = inp.value.trim();
+      if (v && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(v)) return toast("El link tiene que empezar con https://script.google.com y terminar en /exec");
+      const { error } = await sb.from("config").upsert({ clave: "puente_url", valor: v });
+      toast(error ? "No se pudo guardar: " + error.message : "Link guardado."); conf.puente_url = v;
+    };
+  }
+  $("#ch-ok").onclick = async () => {
+    const url = conf.puente_url;
+    if (!url) return toast(admin ? "Primero pegá el link del puente en «Configurar la conexión»." : "Falta configurar la conexión con el chart.");
+    const btn = $("#ch-ok"); btn.disabled = true; btn.textContent = "Actualizando… (puede tardar unos segundos)";
+    try {
+      const r = await (await fetch(url + "?t=" + Date.now())).json();
+      if (!r.ok) throw new Error(r.error || "error desconocido");
+      const sin = (r.nombres_sin_guia || []).filter(n => !/^\?+$/.test(n));
+      const hayIncognita = (r.nombres_sin_guia || []).some(n => /^\?+$/.test(n));
+      $("#ch-res").innerHTML = `<div class="ch-res"><p class="okmsg">Chart actualizado.</p>
+        <p class="meta">Clientes nuevos: ${r.clientes_nuevos} · actualizados: ${r.clientes_actualizados} · quitados: ${r.clientes_quitados}. Turnos de guías: ${r.turnos}.</p>
+        ${hayIncognita ? `<p class="err">Hay turnos con «???» en Chart Guias: no se cuentan para nadie hasta que los completes.</p>` : ""}
+        ${sin.length ? `<p class="lbl">Nombres de Chart Guias que no son guías de la app:</p>
+          <ul class="list">${sin.map(n => `<li><b>${esc(n)}</b><button class="btn small" data-nuevo="${esc(n)}">Agregar como guía</button></li>`).join("")}</ul>
+          <p class="hint">Si es un error de tipeo en el chart, corregilo ahí y volvé a actualizar.</p>` : ""}</div>`;
+      $("#ch-res").onclick = async e => {
+        const b = e.target.closest("[data-nuevo]"); if (!b) return;
+        const n = b.dataset.nuevo; const nombre = n.charAt(0) + n.slice(1).toLowerCase();
+        const { error } = await sb.from("guias").insert({ nombre, nombre_chart: normChart(n) });
+        if (error) return toast(error.message);
+        toast(`${nombre} agregado.`); b.closest("li").remove(); verEquipoGuiasSolo();
+      };
+      prepararChart(admin);
+    } catch (e) {
+      toast("No se pudo actualizar: " + (e.message || e), 5000);
+    } finally { btn.disabled = false; btn.textContent = "Actualizar desde el chart"; }
+  };
+}
+async function verEquipoGuiasSolo() {   // refresca la lista sin perder el resultado del chart
+  const res = $("#ch-res") ? $("#ch-res").innerHTML : "";
+  await verEquipo(); if ($("#ch-res")) $("#ch-res").innerHTML = res;
 }
 
 /* =====================================================================
@@ -961,15 +1027,14 @@ async function verResumen() {
   if (!online()) { $("#r-cuerpo").innerHTML = `<div class="card"><p class="empty">Para ver el resumen hace falta señal.</p></div>`; return; }
   if (desde > hasta) [desde, hasta] = [hasta, desde];
 
-  const [rc, rf, rw] = await Promise.all([
+  const [rc, rf] = await Promise.all([
     sb.from("capturas").select("id,fecha,hora,especie,arte,peso_kg,lugar,notas,rio_dia,rio_anterior,fase_lunar,iluminacion,guias(nombre)")
       .gte("fecha", desde).lte("fecha", hasta).order("fecha").order("hora"),
-    sb.from("fotos").select("id,fecha,path,guias(nombre)").gte("fecha", desde).lte("fecha", hasta).order("fecha"),
-    sb.from("config").select("valor").eq("clave", "whatsapp_supervisor").maybeSingle()
+    sb.from("fotos").select("id,fecha,path,guias(nombre)").gte("fecha", desde).lte("fecha", hasta).order("fecha")
   ]);
   if (tabActual !== "capturas") return;
   if (rc.error) { $("#r-cuerpo").innerHTML = `<div class="card"><p class="err">${esc(rc.error.message)}</p></div>`; return; }
-  const caps = rc.data, fotos = rf.data || [], waSup = (rw.data && rw.data.valor || "").replace(/\D/g, "");
+  const caps = rc.data, fotos = rf.data || [];
   const titulo = desde === hasta ? fCorta(desde) : `del ${fDM(desde)} al ${fDM(hasta)}`;
 
   // Por especie
@@ -995,9 +1060,7 @@ async function verResumen() {
     ${statsEsp.map(e => `<div class="esp"><h3>${esc(e.nombre)} <span>${e.n}</span></h3>
       <p class="meta">Mosca ${e.mosca} · Spinning ${e.spin}${e.pesos.length ? ` · promedio ${kg(e.prom)} kg · máximo ${kg(e.max)} kg` : ""}</p>
       ${e.pesos.length ? `<p class="pesos">${e.pesos.map(kg).join(" · ")} kg</p>` : ""}</div>`).join("")}
-    <p class="hint">Río: ${rioTxt}${lunaTxt ? ` · Luna: ${esc(lunaTxt)}` : ""}</p>
-    <button class="btn" id="r-wa">Enviar al supervisor por WhatsApp</button>
-    ${waSup ? "" : `<p class="hint">No hay número de supervisor cargado: vas a elegir el contacto en WhatsApp. Podés cargarlo en Equipo.</p>`}`
+    <p class="hint">Río: ${rioTxt}${lunaTxt ? ` · Luna: ${esc(lunaTxt)}` : ""}</p>`
     : `<p class="empty">No hay capturas ${desde === hasta ? "ese día" : "en esas fechas"}.</p>`;
 
   // Detalle por día y guía
@@ -1015,15 +1078,7 @@ async function verResumen() {
     ${fotos.length ? `<div class="card"><h2>Fotos <span class="meta">${fotos.length}</span></h2><div class="fotos" id="r-fotos"></div></div>` : ""}
     ${caps.length ? `<div class="card"><h2>Detalle por guía</h2>${detalleHtml}</div>` : ""}`;
 
-  if (caps.length) $("#r-wa").onclick = () => {
-    let t = `*Capturas Suindá · ${titulo}*\nTotal: ${caps.length} ${caps.length === 1 ? "pieza" : "piezas"}\n`;
-    statsEsp.forEach(e => {
-      t += `\n*${e.nombre}: ${e.n}* (mosca ${e.mosca} · spinning ${e.spin})\n`;
-      if (e.pesos.length) t += `Pesos: ${e.pesos.map(kg).join(" · ")} kg\nPromedio ${kg(e.prom)} kg · Máximo ${kg(e.max)} kg\n`;
-    });
-    t += `\nRío: ${rioTxt}${lunaTxt ? `\nLuna: ${lunaTxt}` : ""}`;
-    window.open(`https://wa.me/${waSup}?text=` + encodeURIComponent(t), "_blank");
-  };
+
 
   if (fotos.length) {
     const { data: firmadas } = await sb.storage.from("fotos").createSignedUrls(fotos.map(f => f.path), 3600);
