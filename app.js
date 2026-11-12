@@ -194,6 +194,7 @@ function verPendiente() {
 function armarTabs() {
   const r = perfil.rol, t = [];
   if (perfil.guia_id) t.push(["capturas", "Capturas"], ["entregas", "Entregas"], ["dias", "Días"]);
+  else if (r === "admin" || r === "jefe") t.push(["capturas", "Capturas"]);
   t.push(["licencias", "Licencias"]);
   if (["admin", "jefe", "house_manager"].includes(r)) t.push(["cuentas", "Cuentas"]);
   if (r === "admin" || r === "jefe") t.push(["equipo", "Equipo"]);
@@ -227,10 +228,19 @@ const borrNuevo = () => ({ fecha: hoy(), peces: [], fotos: [] });
 const pezNuevo = (lugar = "") => ({ especie: "", otra: "", arte: "", peso: "", hora: horaStr(), lugar, notas: "" });
 const guardarBorr = () => store.set("borrador", borr);
 
+const esJefe = () => perfil && (perfil.rol === "admin" || perfil.rol === "jefe");
+const selectorCaptura = modo => esJefe() && perfil.guia_id ? `<div class="seg" role="tablist">
+  <button data-modo="cargar" aria-selected="${modo === "cargar"}">Cargar</button>
+  <button data-modo="resumen" aria-selected="${modo === "resumen"}">Resumen del equipo</button></div>` : "";
+function activarSelector() {
+  const sg = main.querySelector(".seg"); if (!sg) return;
+  sg.onclick = e => { const b = e.target.closest("[data-modo]"); if (!b) return; store.set("cap_modo", b.dataset.modo); verCapturas(); };
+}
 function verCapturas() {
+  if (esJefe() && (!perfil.guia_id || store.get("cap_modo", "cargar") === "resumen")) return verResumen();
   borr = store.get("borrador", null) || borrNuevo();
   const lugares = store.get("lugares", []);
-  main.innerHTML = `
+  main.innerHTML = selectorCaptura("cargar") + `
   <div class="card">
     <h2>Planilla del día</h2>
     <label for="c-fecha">Fecha</label><input id="c-fecha" type="date" value="${esc(borr.fecha)}">
@@ -255,6 +265,7 @@ function verCapturas() {
   $("#f-cam").onchange = e => sumarFotos(e.target);
   $("#f-gal").onchange = e => sumarFotos(e.target);
   $("#c-enviar").onclick = enviarPlanilla;
+  activarSelector();
   pintarPeces(); pintarFotos(); pintarEnviadas();
   if (online()) refrescarLugares();
 }
@@ -544,6 +555,14 @@ async function abrirVisor(c) {
     else pags.insertAdjacentHTML("beforeend", `<p style="color:#fff;padding:16px">Esta página no está guardada. Abrila una vez con señal.</p>`);
   }
 }
+function abrirVisorFotos(titulo, urls, inicio = 0) {
+  $("#visor-tit").textContent = titulo;
+  const pags = $("#visor-pags"); pags.innerHTML = "";
+  $("#visor").hidden = false; document.body.style.overflow = "hidden";
+  urls.forEach((u, i) => { const img = new Image(); img.alt = `Foto ${i + 1}`; img.src = u.url; pags.appendChild(img);
+    if (u.pie) pags.insertAdjacentHTML("beforeend", `<p style="color:#fff;margin:-4px 14px 14px;font-size:.9rem">${esc(u.pie)}</p>`); });
+  setTimeout(() => { const im = pags.querySelectorAll("img")[inicio]; if (im) im.scrollIntoView(); }, 50);
+}
 function cerrarVisor() { $("#visor").hidden = true; document.body.style.overflow = ""; $("#visor-pags").innerHTML = ""; }
 
 let clientesAdm = [];
@@ -611,6 +630,11 @@ async function verEquipo() {
     <label for="g-chart">Cómo figura en Chart Guias</label><input id="g-chart" placeholder="Ej.: PABLO" style="text-transform:uppercase">
     <button class="btn" id="g-ok">Agregar guía</button>
   </div>
+  <div class="card"><h2>Supervisor</h2>
+    <label for="sup-wa">WhatsApp del supervisor</label>
+    <input id="sup-wa" inputmode="tel" placeholder="Ej.: 5493794123456">
+    <p class="hint">Con código de país y sin el 15. Se usa para enviarle el resumen de capturas.</p>
+  </div>
   <div class="card"><h2>Artículos</h2>
     <p class="hint" style="margin-top:0">Lo que los guías entregan a los clientes. El precio lo ven solo el jefe de guías y el house manager. Si cambiás un precio, las entregas anteriores mantienen el suyo.</p>
     <div id="eq-arts"><p class="empty">Cargando…</p></div>
@@ -623,6 +647,14 @@ async function verEquipo() {
     <ul class="list" id="eq-users"><li class="empty">Cargando…</li></ul></div>` : ""}`;
   if (!online()) { main.insertAdjacentHTML("afterbegin", `<div class="offline">Para editar el equipo hace falta señal.</div>`); return; }
   pintarArticulosEquipo();
+  sb.from("config").select("valor").eq("clave", "whatsapp_supervisor").maybeSingle().then(({ data }) => {
+    const inp = $("#sup-wa"); if (!inp) return;
+    inp.value = data && data.valor || "";
+    inp.onchange = async () => {
+      const { error } = await sb.from("config").upsert({ clave: "whatsapp_supervisor", valor: inp.value.replace(/\D/g, "") });
+      toast(error ? "No se pudo guardar: " + error.message : "Número guardado.");
+    };
+  });
   const { data: guias } = await sb.from("guias").select("id,nombre,nombre_chart,activo").order("nombre");
   const gs = guias || [];
   $("#eq-guias").innerHTML = gs.length ? gs.map(g => `<li><div><b>${esc(g.nombre)}</b><span class="meta">En el chart: ${esc(g.nombre_chart)}</span></div>
@@ -890,6 +922,116 @@ async function pintarArticulosEquipo() {
     await sb.from("articulo_precios").upsert({ articulo_id: data.id, precio, moneda });
     $("#a-nombre").value = ""; $("#a-precio").value = ""; toast("Artículo agregado."); pintarArticulosEquipo();
   };
+}
+
+/* =====================================================================
+   RESUMEN DE CAPTURAS (jefe de guías)
+   ===================================================================== */
+const kg = n => Number(n).toLocaleString("es-AR", { maximumFractionDigits: 2 });
+function rangoResumen(clave) {
+  const h = hoy(), d = new Date(h + "T12:00:00");
+  if (clave === "ayer") return [sumaDias(h, -1), sumaDias(h, -1)];
+  if (clave === "semana") { const dow = (d.getDay() + 6) % 7; return [sumaDias(h, -dow), h]; }
+  if (clave === "temporada") return [sumaDias(h, -365), h];
+  return [h, h];
+}
+async function verResumen() {
+  const conf = store.get("res_rango", { clave: "hoy" });
+  let [desde, hasta] = conf.clave === "otro" ? [conf.desde, conf.hasta] : rangoResumen(conf.clave);
+  main.innerHTML = selectorCaptura("resumen") + `
+  <div class="card"><h2>Resumen de capturas</h2>
+    <div class="chips cuatro" id="r-rango">
+      ${[["hoy", "Hoy"], ["ayer", "Ayer"], ["semana", "Semana"], ["otro", "Fechas"]].map(([k, n]) =>
+        `<button class="chip" data-r="${k}" aria-pressed="${conf.clave === k}">${n}</button>`).join("")}
+    </div>
+    <div class="row" id="r-fechas" ${conf.clave === "otro" ? "" : "hidden"}>
+      <div><label for="r-desde">Desde</label><input id="r-desde" type="date" value="${desde}"></div>
+      <div><label for="r-hasta">Hasta</label><input id="r-hasta" type="date" value="${hasta}"></div>
+    </div>
+  </div>
+  <div id="r-cuerpo"><p class="loading">Cargando…</p></div>`;
+  activarSelector();
+  $("#r-rango").onclick = e => {
+    const b = e.target.closest("[data-r]"); if (!b) return;
+    const k = b.dataset.r;
+    store.set("res_rango", k === "otro" ? { clave: "otro", desde, hasta } : { clave: k }); verResumen();
+  };
+  const cambiarFechas = () => { store.set("res_rango", { clave: "otro", desde: $("#r-desde").value, hasta: $("#r-hasta").value }); verResumen(); };
+  $("#r-desde").onchange = cambiarFechas; $("#r-hasta").onchange = cambiarFechas;
+  if (!online()) { $("#r-cuerpo").innerHTML = `<div class="card"><p class="empty">Para ver el resumen hace falta señal.</p></div>`; return; }
+  if (desde > hasta) [desde, hasta] = [hasta, desde];
+
+  const [rc, rf, rw] = await Promise.all([
+    sb.from("capturas").select("id,fecha,hora,especie,arte,peso_kg,lugar,notas,rio_dia,rio_anterior,fase_lunar,iluminacion,guias(nombre)")
+      .gte("fecha", desde).lte("fecha", hasta).order("fecha").order("hora"),
+    sb.from("fotos").select("id,fecha,path,guias(nombre)").gte("fecha", desde).lte("fecha", hasta).order("fecha"),
+    sb.from("config").select("valor").eq("clave", "whatsapp_supervisor").maybeSingle()
+  ]);
+  if (tabActual !== "capturas") return;
+  if (rc.error) { $("#r-cuerpo").innerHTML = `<div class="card"><p class="err">${esc(rc.error.message)}</p></div>`; return; }
+  const caps = rc.data, fotos = rf.data || [], waSup = (rw.data && rw.data.valor || "").replace(/\D/g, "");
+  const titulo = desde === hasta ? fCorta(desde) : `del ${fDM(desde)} al ${fDM(hasta)}`;
+
+  // Por especie
+  const esp = {};
+  caps.forEach(c => {
+    const e = (esp[c.especie] ||= { n: 0, mosca: 0, spin: 0, pesos: [] });
+    e.n++; if (c.arte === "Mosca") e.mosca++; if (c.arte === "Spinning") e.spin++;
+    if (c.peso_kg != null) e.pesos.push(Number(c.peso_kg));
+  });
+  const orden = Object.entries(esp).sort((a, b) => b[1].n - a[1].n);
+  const statsEsp = orden.map(([nombre, e]) => {
+    const prom = e.pesos.length ? e.pesos.reduce((a, b) => a + b, 0) / e.pesos.length : null;
+    const max = e.pesos.length ? Math.max(...e.pesos) : null;
+    return { nombre, ...e, prom, max };
+  });
+  // Río y luna (del último día del rango con datos)
+  const ult = [...caps].reverse().find(c => c.rio_dia != null || c.fase_lunar);
+  const rioTxt = ult && ult.rio_dia != null ? `${kg(ult.rio_dia)} m${ult.rio_anterior != null ? ` (día anterior ${kg(ult.rio_anterior)} m)` : ""}` : "sin cargar";
+  const lunaTxt = ult && ult.fase_lunar ? `${ult.fase_lunar} (${ult.iluminacion}%)` : "";
+
+  const resumenHtml = caps.length ? `
+    <p class="grande-num">${caps.length} <span>${caps.length === 1 ? "pieza" : "piezas"}</span></p>
+    ${statsEsp.map(e => `<div class="esp"><h3>${esc(e.nombre)} <span>${e.n}</span></h3>
+      <p class="meta">Mosca ${e.mosca} · Spinning ${e.spin}${e.pesos.length ? ` · promedio ${kg(e.prom)} kg · máximo ${kg(e.max)} kg` : ""}</p>
+      ${e.pesos.length ? `<p class="pesos">${e.pesos.map(kg).join(" · ")} kg</p>` : ""}</div>`).join("")}
+    <p class="hint">Río: ${rioTxt}${lunaTxt ? ` · Luna: ${esc(lunaTxt)}` : ""}</p>
+    <button class="btn" id="r-wa">Enviar al supervisor por WhatsApp</button>
+    ${waSup ? "" : `<p class="hint">No hay número de supervisor cargado: vas a elegir el contacto en WhatsApp. Podés cargarlo en Equipo.</p>`}`
+    : `<p class="empty">No hay capturas ${desde === hasta ? "ese día" : "en esas fechas"}.</p>`;
+
+  // Detalle por día y guía
+  const porDia = {};
+  caps.forEach(c => { ((porDia[c.fecha] ||= {})[c.guias ? c.guias.nombre : "—"] ||= []).push(c); });
+  const detalleHtml = Object.entries(porDia).reverse().map(([f, gs]) => `
+    <div class="dia-det"><h3>${fCorta(f)}</h3>${Object.entries(gs).map(([g, cs]) => `
+      <p class="guia-det">${esc(g)} · ${cs.length} ${cs.length === 1 ? "pieza" : "piezas"}</p>
+      <ul class="list">${cs.map(c => `<li><div><b>${esc(c.especie)}${c.peso_kg != null ? " · " + kg(c.peso_kg) + " kg" : ""}</b>
+        <span class="meta">${[c.hora ? c.hora.slice(0, 5) : "", c.arte, c.lugar].filter(Boolean).map(esc).join(" · ")}${c.notas ? " · " + esc(c.notas) : ""}</span></div></li>`).join("")}</ul>`).join("")}
+    </div>`).join("");
+
+  $("#r-cuerpo").innerHTML = `
+    <div class="card"><h2>${esc(titulo)}</h2>${resumenHtml}</div>
+    ${fotos.length ? `<div class="card"><h2>Fotos <span class="meta">${fotos.length}</span></h2><div class="fotos" id="r-fotos"></div></div>` : ""}
+    ${caps.length ? `<div class="card"><h2>Detalle por guía</h2>${detalleHtml}</div>` : ""}`;
+
+  if (caps.length) $("#r-wa").onclick = () => {
+    let t = `*Capturas Suindá · ${titulo}*\nTotal: ${caps.length} ${caps.length === 1 ? "pieza" : "piezas"}\n`;
+    statsEsp.forEach(e => {
+      t += `\n*${e.nombre}: ${e.n}* (mosca ${e.mosca} · spinning ${e.spin})\n`;
+      if (e.pesos.length) t += `Pesos: ${e.pesos.map(kg).join(" · ")} kg\nPromedio ${kg(e.prom)} kg · Máximo ${kg(e.max)} kg\n`;
+    });
+    t += `\nRío: ${rioTxt}${lunaTxt ? `\nLuna: ${lunaTxt}` : ""}`;
+    window.open(`https://wa.me/${waSup}?text=` + encodeURIComponent(t), "_blank");
+  };
+
+  if (fotos.length) {
+    const { data: firmadas } = await sb.storage.from("fotos").createSignedUrls(fotos.map(f => f.path), 3600);
+    const urls = (firmadas || []).map((x, i) => ({ url: x.signedUrl, pie: `${fCorta(fotos[i].fecha)} · ${fotos[i].guias ? fotos[i].guias.nombre : ""}` })).filter(x => x.url);
+    const box = $("#r-fotos"); if (!box) return;
+    box.innerHTML = urls.map((u, i) => `<div><img src="${u.url}" alt="Foto ${i + 1}" loading="lazy" data-i="${i}"></div>`).join("");
+    box.onclick = e => { const im = e.target.closest("[data-i]"); if (im) abrirVisorFotos(`Fotos · ${titulo}`, urls, Number(im.dataset.i)); };
+  }
 }
 
 iniciar();
