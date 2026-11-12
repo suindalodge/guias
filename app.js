@@ -193,8 +193,9 @@ function verPendiente() {
 /* ---------- pestañas según el rol ---------- */
 function armarTabs() {
   const r = perfil.rol, t = [];
-  if (perfil.guia_id) t.push(["capturas", "Capturas"], ["dias", "Mis días"]);
+  if (perfil.guia_id) t.push(["capturas", "Capturas"], ["entregas", "Entregas"], ["dias", "Días"]);
   t.push(["licencias", "Licencias"]);
+  if (["admin", "jefe", "house_manager"].includes(r)) t.push(["cuentas", "Cuentas"]);
   if (r === "admin" || r === "jefe") t.push(["equipo", "Equipo"]);
   const inn = $("#tabs-in");
   inn.innerHTML = t.map(([k, n]) => `<button data-tab="${k}" role="tab">${n}</button>`).join("");
@@ -206,9 +207,12 @@ function armarTabs() {
 function irA(tab) {
   tabActual = tab;
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
-  document.querySelectorAll("#tabs-in button").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === tab));
+  document.querySelectorAll("#tabs-in button").forEach(b => {
+    b.setAttribute("aria-selected", b.dataset.tab === tab);
+    if (b.dataset.tab === tab) b.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
   window.scrollTo(0, 0);
-  ({ capturas: verCapturas, dias: verDias, licencias: verLicencias, equipo: verEquipo })[tab]();
+  ({ capturas: verCapturas, entregas: verEntregas, dias: verDias, licencias: verLicencias, cuentas: verCuentas, equipo: verEquipo })[tab]();
 }
 window.addEventListener("hashchange", () => {
   const t = location.hash.replace("#", "");
@@ -369,16 +373,22 @@ async function procesarCola(manual) {
     try {
       await enviarItem(it);
       await idb.del("cola", it.id);
-      const h = store.get("enviadas", []); const x = h.find(y => y.id === it.id); if (x) { x.estado = "ok"; store.set("enviadas", h); }
+      for (const k of ["enviadas", "entregas_hist"]) { const h = store.get(k, []); const x = h.find(y => y.id === it.id); if (x) { x.estado = "ok"; store.set(k, h); } }
     } catch (e) { errores++; console.error(e); }
   }
   enviando = false;
   const quedan = (await idb.keys("cola")).length;
   pintarCola(quedan);
   if (tabActual === "capturas") pintarEnviadas();
-  if (manual || (items.length && !quedan)) toast(quedan ? `No se pudo enviar (${quedan} pendiente${quedan > 1 ? "s" : ""}). Se reintenta solo.` : "Planillas enviadas.");
+  if (tabActual === "entregas") pintarEntregasHist();
+  if (manual || (items.length && !quedan)) toast(quedan ? `No se pudo enviar (${quedan} pendiente${quedan > 1 ? "s" : ""}). Se reintenta solo.` : "Todo enviado.");
 }
 async function enviarItem(it) {
+  if (it.tipo === "entrega") {
+    const r = await sb.from("entregas").upsert(it.filas, { onConflict: "id", ignoreDuplicates: true });
+    if (r.error) throw r.error;
+    return;
+  }
   let r = await sb.from("planillas").upsert(it.planilla, { onConflict: "id", ignoreDuplicates: true });
   if (r.error) throw r.error;
   if (it.capturas.length) {
@@ -404,7 +414,7 @@ async function enviarItem(it) {
 }
 function pintarCola(n) {
   $("#cola").hidden = !n;
-  $("#cola-txt").textContent = n === 1 ? "1 planilla sin enviar" : `${n} planillas sin enviar`;
+  $("#cola-txt").textContent = n === 1 ? "1 carga sin enviar" : `${n} cargas sin enviar`;
 }
 
 /* =====================================================================
@@ -601,9 +611,18 @@ async function verEquipo() {
     <label for="g-chart">Cómo figura en Chart Guias</label><input id="g-chart" placeholder="Ej.: PABLO" style="text-transform:uppercase">
     <button class="btn" id="g-ok">Agregar guía</button>
   </div>
+  <div class="card"><h2>Artículos</h2>
+    <p class="hint" style="margin-top:0">Lo que los guías entregan a los clientes. El precio lo ven solo el jefe de guías y el house manager. Si cambiás un precio, las entregas anteriores mantienen el suyo.</p>
+    <div id="eq-arts"><p class="empty">Cargando…</p></div>
+    <label for="a-nombre">Nuevo artículo</label><input id="a-nombre" placeholder="Ej.: Poppers">
+    <div class="row"><div><label for="a-precio">Precio</label><input id="a-precio" inputmode="decimal" placeholder="0"></div>
+      <div><label for="a-moneda">Moneda</label><select id="a-moneda"><option value="USD">Dólares</option><option value="ARS">Pesos</option></select></div></div>
+    <button class="btn" id="a-ok">Agregar artículo</button>
+  </div>
   ${admin ? `<div class="card"><h2>Usuarios</h2><p class="hint" style="margin-top:0">Cada persona crea su cuenta en la app. Acá le asignás el rol y, si es guía, quién es.</p>
     <ul class="list" id="eq-users"><li class="empty">Cargando…</li></ul></div>` : ""}`;
   if (!online()) { main.insertAdjacentHTML("afterbegin", `<div class="offline">Para editar el equipo hace falta señal.</div>`); return; }
+  pintarArticulosEquipo();
   const { data: guias } = await sb.from("guias").select("id,nombre,nombre_chart,activo").order("nombre");
   const gs = guias || [];
   $("#eq-guias").innerHTML = gs.length ? gs.map(g => `<li><div><b>${esc(g.nombre)}</b><span class="meta">En el chart: ${esc(g.nombre_chart)}</span></div>
@@ -638,6 +657,238 @@ async function verEquipo() {
     const { error } = await sb.from("perfiles").update({ [f]: val }).eq("id", li.dataset.u);
     toast(error ? "No se pudo guardar: " + error.message : "Guardado.");
     if (!error && li.dataset.u === perfil.id) cargarPerfil({ id: perfil.id });
+  };
+}
+
+/* =====================================================================
+   ENTREGAS (guías)
+   ===================================================================== */
+const plata = (m, n) => (m === "ARS" ? "$ " : "USD ") + Number(n || 0).toLocaleString("es-AR", { maximumFractionDigits: 2 });
+
+async function refrescarArticulos() {
+  if (!online()) return store.get("articulos", []);
+  const { data } = await sb.from("articulos").select("id,nombre,orden,activo").order("orden").order("nombre");
+  if (data) store.set("articulos", data);
+  return data || store.get("articulos", []);
+}
+async function refrescarClientesCache() {
+  if (!online()) return store.get("clientes_cache", []);
+  const h = hoy();
+  const { data } = await sb.from("clientes").select("id,nombre,grupo,inicio,fin")
+    .lte("inicio", sumaDias(h, 3)).gte("fin", sumaDias(h, -3)).order("grupo").order("nombre");
+  if (data) store.set("clientes_cache", data);
+  return data || store.get("clientes_cache", []);
+}
+
+let entCant = {};
+async function verEntregas() {
+  main.innerHTML = `
+  <div class="card"><h2>Entrega a un cliente</h2>
+    <label for="e-fecha">Fecha</label><input id="e-fecha" type="date" value="${hoy()}">
+    <label for="e-cli">Cliente</label><select id="e-cli"><option value="">Cargando…</option></select>
+    <label>Qué le diste</label><div id="e-arts"></div>
+    <p class="err" id="e-err" hidden></p>
+    <button class="btn" id="e-ok">Guardar entrega</button>
+  </div>
+  <div class="card"><h3>Cargadas desde este teléfono</h3><ul class="list" id="e-hist"></ul></div>`;
+  entCant = {};
+  const [arts, clis] = await Promise.all([refrescarArticulos(), refrescarClientesCache()]);
+  if (tabActual !== "entregas") return;
+  const pintarClientes = () => {
+    const f = $("#e-fecha").value || hoy();
+    const lista = clis.filter(c => c.inicio <= sumaDias(f, 1) && c.fin >= sumaDias(f, -1));
+    const grupos = {};
+    lista.forEach(c => (grupos[c.grupo || "Sin grupo"] ||= []).push(c));
+    $("#e-cli").innerHTML = lista.length
+      ? `<option value="">Elegí el cliente</option>` + Object.entries(grupos).map(([g, cs]) =>
+          `<optgroup label="${esc(g)}">${cs.map(c => `<option value="${c.id}">${esc(c.nombre)}</option>`).join("")}</optgroup>`).join("")
+      : `<option value="">No hay clientes en el lodge para esa fecha</option>`;
+  };
+  pintarClientes();
+  $("#e-fecha").onchange = pintarClientes;
+  const activos = arts.filter(a => a.activo);
+  const pintarArts = () => {
+    $("#e-arts").innerHTML = activos.length ? activos.map(a => `
+      <div class="paso"><span>${esc(a.nombre)}</span>
+        <div class="stepper"><button data-a="${a.id}" data-d="-1" aria-label="Menos">−</button><b>${entCant[a.id] || 0}</b><button data-a="${a.id}" data-d="1" aria-label="Más">+</button></div>
+      </div>`).join("") : `<p class="hint">No hay artículos cargados. El jefe de guías los agrega en Equipo.</p>`;
+  };
+  pintarArts();
+  $("#e-arts").onclick = e => {
+    const b = e.target.closest("[data-a]"); if (!b) return;
+    entCant[b.dataset.a] = Math.max(0, (entCant[b.dataset.a] || 0) + Number(b.dataset.d)); pintarArts();
+  };
+  $("#e-ok").onclick = async () => {
+    const err = $("#e-err"); err.hidden = true;
+    const cli = $("#e-cli").value, fecha = $("#e-fecha").value;
+    const filas = activos.filter(a => entCant[a.id] > 0).map(a => ({
+      id: uid(), guia_id: perfil.guia_id, cliente_id: cli, fecha, articulo_id: a.id, insumo: a.nombre, cantidad: entCant[a.id] }));
+    if (!cli) { err.textContent = "Elegí el cliente."; err.hidden = false; return; }
+    if (!filas.length) { err.textContent = "Marcá al menos un artículo."; err.hidden = false; return; }
+    const id = uid();
+    await idb.put("cola", id, { id, tipo: "entrega", creado: Date.now(), filas });
+    const c = clis.find(x => x.id === cli);
+    const h = store.get("entregas_hist", []);
+    h.unshift({ id, fecha, cliente: c ? c.nombre : "", detalle: filas.map(f => f.cantidad + " " + f.insumo).join(", "), estado: "espera" });
+    store.set("entregas_hist", h.slice(0, 30));
+    toast(online() ? "Guardando…" : "Guardada. Se envía sola al volver la señal.");
+    entCant = {}; pintarArts(); $("#e-cli").value = "";
+    pintarEntregasHist(); procesarCola();
+  };
+  pintarEntregasHist();
+}
+function pintarEntregasHist() {
+  const ul = $("#e-hist"); if (!ul) return;
+  const h = store.get("entregas_hist", []);
+  ul.innerHTML = h.length ? h.slice(0, 15).map(x => `<li><div><b>${esc(x.cliente)}</b><span class="meta">${fCorta(x.fecha)} · ${esc(x.detalle)}</span></div>
+    <span class="estado ${x.estado === "ok" ? "si" : "no"}">${x.estado === "ok" ? "Enviada" : "Esperando señal"}</span></li>`).join("")
+    : `<li class="empty">Todavía no cargaste entregas desde este teléfono.</li>`;
+}
+
+/* =====================================================================
+   CUENTAS (jefe de guías y house manager)
+   ===================================================================== */
+let ctaClientes = [], ctaEntregas = [], ctaSel = new Set();
+async function verCuentas() {
+  main.innerHTML = `<p class="loading">Cargando cuentas…</p>`;
+  if (!online()) { main.innerHTML = `<div class="card"><p class="empty">Para ver las cuentas hace falta señal.</p></div>`; return; }
+  const desde = sumaDias(hoy(), -30);
+  const [rc, re] = await Promise.all([
+    sb.from("clientes").select("id,nombre,grupo,inicio,fin").gte("fin", desde).order("fin").order("grupo").order("nombre"),
+    sb.from("entregas").select("id,cliente_id,fecha,insumo,cantidad,precio_unit,moneda,anulada,guias(nombre)").eq("anulada", false).gte("fecha", sumaDias(desde, -30)).order("fecha")
+  ]);
+  if (tabActual !== "cuentas") return;
+  if (rc.error || re.error) { main.innerHTML = `<div class="card"><p class="err">${esc((rc.error || re.error).message)}</p></div>`; return; }
+  ctaEntregas = re.data;
+  const conEntregas = new Set(ctaEntregas.map(e => e.cliente_id));
+  ctaClientes = rc.data.filter(c => conEntregas.has(c.id) || c.fin >= hoy());
+  ctaSel = new Set([...ctaSel].filter(id => ctaClientes.some(c => c.id === id)));
+  const grupos = [...new Set(ctaClientes.map(c => c.grupo).filter(Boolean))];
+  main.innerHTML = `
+  <div class="card"><h2>Cuentas de clientes</h2>
+    <div class="chips" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr))">
+      <button class="chip" data-atajo="hoy">Terminan hoy</button>
+      ${grupos.map(g => `<button class="chip" data-atajo="g:${esc(g)}">${esc(g)}</button>`).join("")}
+      <button class="chip" data-atajo="nada">Limpiar</button>
+    </div>
+    <ul class="list checks" id="cta-lista" style="margin-top:10px"></ul>
+  </div>
+  <div id="cta-detalle"></div>`;
+  pintarCtaLista(); pintarCtaDetalle();
+  main.querySelector(".chips").onclick = e => {
+    const b = e.target.closest("[data-atajo]"); if (!b) return;
+    const a = b.dataset.atajo;
+    if (a === "nada") ctaSel.clear();
+    else if (a === "hoy") ctaClientes.filter(c => c.fin === hoy()).forEach(c => ctaSel.add(c.id));
+    else ctaClientes.filter(c => c.grupo === a.slice(2)).forEach(c => ctaSel.add(c.id));
+    pintarCtaLista(); pintarCtaDetalle();
+  };
+  $("#cta-lista").onchange = e => {
+    const id = e.target.dataset.c; if (!id) return;
+    e.target.checked ? ctaSel.add(id) : ctaSel.delete(id); pintarCtaDetalle();
+  };
+}
+function totalesDe(es) {
+  const t = {}; es.forEach(e => { if (e.precio_unit != null) t[e.moneda || "USD"] = (t[e.moneda || "USD"] || 0) + e.cantidad * Number(e.precio_unit); });
+  return t;
+}
+const textoTotales = t => Object.keys(t).length ? Object.entries(t).map(([m, n]) => plata(m, n)).join(" + ") : "Sin cargo";
+function pintarCtaLista() {
+  $("#cta-lista").innerHTML = ctaClientes.length ? ctaClientes.map(c => {
+    const n = ctaEntregas.filter(e => e.cliente_id === c.id).length;
+    return `<li><label class="check"><input type="checkbox" data-c="${c.id}" ${ctaSel.has(c.id) ? "checked" : ""}>
+      <span><b>${esc(c.nombre)}</b><span class="meta">${esc(c.grupo || "")} · se va el ${fDM(c.fin)} · ${n ? n + (n === 1 ? " entrega" : " entregas") : "sin entregas"}</span></span></label></li>`;
+  }).join("") : `<li class="empty">No hay clientes recientes.</li>`;
+}
+function pintarCtaDetalle() {
+  const box = $("#cta-detalle"); if (!box) return;
+  const sel = ctaClientes.filter(c => ctaSel.has(c.id));
+  if (!sel.length) { box.innerHTML = ""; return; }
+  const anula = perfil.rol === "admin" || perfil.rol === "jefe";
+  const todas = [];
+  const bloques = sel.map(c => {
+    const es = ctaEntregas.filter(e => e.cliente_id === c.id); todas.push(...es);
+    return `<div class="cta"><h3>${esc(c.nombre)} <span class="meta">${esc(c.grupo || "")}</span></h3>
+      ${es.length ? `<ul class="list">${es.map(e => `<li><div><b>${e.cantidad} × ${esc(e.insumo)}</b>
+        <span class="meta">${fCorta(e.fecha)}${e.guias ? " · " + esc(e.guias.nombre) : ""}${e.precio_unit != null ? " · " + plata(e.moneda, e.precio_unit) + " c/u" : ""}</span></div>
+        <span class="monto">${e.precio_unit != null ? plata(e.moneda, e.cantidad * e.precio_unit) : "—"}${anula ? `<button class="x" data-anular="${e.id}" aria-label="Anular">Anular</button>` : ""}</span></li>`).join("")}</ul>`
+        : `<p class="hint">Sin entregas.</p>`}
+      <p class="total">Total: ${textoTotales(totalesDe(es))}</p></div>`;
+  }).join("");
+  box.innerHTML = `<div class="card"><h2>Detalle</h2>${bloques}
+    ${sel.length > 1 ? `<p class="total grande">Total de los ${sel.length} clientes: ${textoTotales(totalesDe(todas))}</p>` : ""}
+    <button class="btn" id="cta-wa">Enviar por WhatsApp</button></div>`;
+  box.onclick = async e => {
+    const b = e.target.closest("[data-anular]"); if (!b) return;
+    if (!confirm("¿Anular esta entrega? Deja de sumarse en la cuenta.")) return;
+    const { error } = await sb.from("entregas").update({ anulada: true }).eq("id", b.dataset.anular);
+    if (error) return toast("No se pudo anular: " + error.message);
+    ctaEntregas = ctaEntregas.filter(x => x.id !== b.dataset.anular); toast("Entrega anulada.");
+    pintarCtaLista(); pintarCtaDetalle();
+  };
+  $("#cta-wa").onclick = () => {
+    let t = "*Cuenta de artículos · Suindá*\n";
+    sel.forEach(c => {
+      const es = ctaEntregas.filter(e => e.cliente_id === c.id);
+      t += `\n*${c.nombre}*${c.grupo ? " (" + c.grupo + ")" : ""}\n`;
+      const agrup = {};
+      es.forEach(e => { const k = e.insumo + "|" + (e.precio_unit ?? "") + "|" + (e.moneda || ""); (agrup[k] ||= { ...e, cantidad: 0 }).cantidad += e.cantidad; });
+      Object.values(agrup).forEach(e => t += `• ${e.cantidad} × ${e.insumo}${e.precio_unit != null ? " — " + plata(e.moneda, e.cantidad * e.precio_unit) : ""}\n`);
+      if (!es.length) t += "• Sin entregas\n";
+      t += `Total: ${textoTotales(totalesDe(es))}\n`;
+    });
+    if (sel.length > 1) t += `\n*Total general: ${textoTotales(totalesDe(todas))}*`;
+    window.open("https://wa.me/?text=" + encodeURIComponent(t), "_blank");
+  };
+}
+
+/* ---------- Equipo: artículos y precios ---------- */
+async function pintarArticulosEquipo() {
+  const box = $("#eq-arts"); if (!box) return;
+  const [ra, rp] = await Promise.all([
+    sb.from("articulos").select("id,nombre,orden,activo").order("orden").order("nombre"),
+    sb.from("articulo_precios").select("articulo_id,precio,moneda")
+  ]);
+  if (ra.error) { box.innerHTML = `<p class="err">${esc(ra.error.message)}</p>`; return; }
+  const precios = Object.fromEntries((rp.data || []).map(p => [p.articulo_id, p]));
+  const arts = ra.data;
+  box.innerHTML = arts.length ? arts.map(a => {
+    const p = precios[a.id] || { precio: 0, moneda: "USD" };
+    return `<div class="art ${a.activo ? "" : "off"}" data-art="${a.id}">
+      <input data-f="nombre" value="${esc(a.nombre)}" aria-label="Nombre">
+      <div class="row3">
+        <input data-f="precio" inputmode="decimal" value="${String(p.precio).replace(".", ",")}" aria-label="Precio">
+        <select data-f="moneda" aria-label="Moneda"><option value="USD" ${p.moneda === "USD" ? "selected" : ""}>USD</option><option value="ARS" ${p.moneda === "ARS" ? "selected" : ""}>$</option></select>
+        <button class="btn small secondary" data-act>${a.activo ? "Activo" : "Inactivo"}</button>
+      </div></div>`;
+  }).join("") : `<p class="empty">Todavía no hay artículos.</p>`;
+  const guardar = async el => {
+    const fila = el.closest("[data-art]"); const id = fila.dataset.art;
+    const nombre = fila.querySelector('[data-f="nombre"]').value.trim();
+    const precio = Number(fila.querySelector('[data-f="precio"]').value.replace(",", "."));
+    const moneda = fila.querySelector('[data-f="moneda"]').value;
+    if (!nombre) return toast("El nombre no puede quedar vacío.");
+    if (isNaN(precio) || precio < 0) return toast("Revisá el precio.");
+    const r1 = await sb.from("articulos").update({ nombre }).eq("id", id);
+    const r2 = await sb.from("articulo_precios").upsert({ articulo_id: id, precio, moneda, actualizado: new Date().toISOString() });
+    toast(r1.error || r2.error ? "No se pudo guardar: " + (r1.error || r2.error).message : "Guardado.");
+  };
+  box.onchange = e => { if (e.target.dataset.f) guardar(e.target); };
+  box.onclick = async e => {
+    const b = e.target.closest("[data-act]"); if (!b) return;
+    const a = arts.find(x => x.id === b.closest("[data-art]").dataset.art);
+    const { error } = await sb.from("articulos").update({ activo: !a.activo }).eq("id", a.id);
+    if (error) return toast(error.message); pintarArticulosEquipo();
+  };
+  $("#a-ok").onclick = async () => {
+    const nombre = $("#a-nombre").value.trim(), precio = Number(($("#a-precio").value || "0").replace(",", ".")), moneda = $("#a-moneda").value;
+    if (!nombre) return toast("Escribí el nombre del artículo.");
+    if (isNaN(precio) || precio < 0) return toast("Revisá el precio.");
+    const orden = arts.reduce((m, a) => Math.max(m, a.orden || 0), 0) + 1;
+    const { data, error } = await sb.from("articulos").insert({ nombre, orden }).select("id").single();
+    if (error) return toast("No se pudo agregar: " + error.message);
+    await sb.from("articulo_precios").upsert({ articulo_id: data.id, precio, moneda });
+    $("#a-nombre").value = ""; $("#a-precio").value = ""; toast("Artículo agregado."); pintarArticulosEquipo();
   };
 }
 
