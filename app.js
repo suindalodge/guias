@@ -43,6 +43,17 @@ function cargarScript(src) {
   });
 }
 
+/* Supabase devuelve como máximo 1000 filas por consulta: esto trae todas, de a páginas */
+async function todas(armar) {
+  let out = [];
+  for (let i = 0; ; i += 1000) {
+    const { data, error } = await armar().range(i, i + 999);
+    if (error) return { data: null, error };
+    out = out.concat(data);
+    if (data.length < 1000) return { data: out, error: null };
+  }
+}
+
 /* ---------- almacenamiento en el teléfono (IndexedDB) ---------- */
 const idb = (() => {
   let dbp;
@@ -876,7 +887,7 @@ async function verCuentas() {
   const desde = sumaDias(hoy(), -30);
   const [rc, re] = await Promise.all([
     sb.from("clientes").select("id,nombre,grupo,inicio,fin").gte("fin", desde).order("fin").order("grupo").order("nombre"),
-    sb.from("entregas").select("id,cliente_id,fecha,insumo,cantidad,precio_unit,moneda,anulada,guias(nombre)").eq("anulada", false).gte("fecha", sumaDias(desde, -30)).order("fecha")
+    todas(() => sb.from("entregas").select("id,cliente_id,fecha,insumo,cantidad,precio_unit,moneda,anulada,guias(nombre)").eq("anulada", false).gte("fecha", sumaDias(desde, -30)).order("fecha").order("id"))
   ]);
   if (tabActual !== "cuentas") return;
   if (rc.error || re.error) { main.innerHTML = `<div class="card"><p class="err">${esc((rc.error || re.error).message)}</p></div>`; return; }
@@ -1055,8 +1066,8 @@ async function verResumen() {
   if (desde > hasta) [desde, hasta] = [hasta, desde];
 
   const [rc, rf] = await Promise.all([
-    sb.from("capturas").select("id,fecha,hora,especie,arte,peso_kg,lugar,notas,rio_dia,rio_anterior,fase_lunar,iluminacion,guias(nombre)")
-      .gte("fecha", desde).lte("fecha", hasta).order("fecha").order("hora"),
+    todas(() => sb.from("capturas").select("id,fecha,hora,especie,arte,peso_kg,lugar,notas,rio_dia,rio_anterior,fase_lunar,iluminacion,guias(nombre)")
+      .gte("fecha", desde).lte("fecha", hasta).order("fecha").order("hora").order("id")),
     sb.from("fotos").select("id,fecha,path,guias(nombre)").gte("fecha", desde).lte("fecha", hasta).order("fecha")
   ]);
   if (tabActual !== "capturas") return;
@@ -1149,8 +1160,8 @@ async function verMisPropinas() {
   let datos = store.get("mispropinas2", null);
   if (online()) {
     const [rr, rm] = await Promise.all([
-      sb.from("propina_reparto").select("guia_id,nombre,sesiones,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)").eq("guia_id", perfil.guia_id),
-      sb.from("propina_movimientos").select("id,fecha,tipo,moneda,monto,nota,anulado").eq("guia_id", perfil.guia_id).eq("anulado", false)
+      todas(() => sb.from("propina_reparto").select("guia_id,nombre,sesiones,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)").eq("guia_id", perfil.guia_id).order("propina_id")),
+      todas(() => sb.from("propina_movimientos").select("id,fecha,tipo,moneda,monto,nota,anulado").eq("guia_id", perfil.guia_id).eq("anulado", false).order("id"))
     ]);
     if (!rr.error && !rm.error) { datos = { rep: rr.data.filter(r => r.propinas && !r.propinas.anulada), movs: rm.data }; store.set("mispropinas2", datos); }
   }
@@ -1184,8 +1195,10 @@ async function verPropinasJefe() {
   main.innerHTML = cab + `<p class="loading">Cargando…</p>`; activarSeg("cta_modo", verCuentas);
   if (!online()) { main.innerHTML = cab + `<div class="card"><p class="empty">Para las propinas hace falta señal.</p></div>`; activarSeg("cta_modo", verCuentas); return; }
   const [rs, rc] = await Promise.all([
-    sb.from("chart_sesiones").select("grupo,fecha,codigo").gte("fecha", sumaDias(hoy(), -60)).in("codigo", ["F", "FA", "FD", "AD"]),
-    sb.from("clientes").select("nombre,grupo").not("grupo", "is", null)
+    // solo grupos que ya pescaron (de 60 días atrás a hoy)
+    todas(() => sb.from("chart_sesiones").select("grupo,fecha,codigo").gte("fecha", sumaDias(hoy(), -60)).lte("fecha", hoy())
+      .in("codigo", ["F", "FA", "FD", "AD"]).order("fecha").order("turno").order("grupo")),
+    todas(() => sb.from("clientes").select("nombre,grupo").not("grupo", "is", null).order("id"))
   ]);
   if (tabActual !== "cuentas") return;
   const nombres = {}; (rc.data || []).forEach(c => (nombres[c.grupo] ||= new Set()).add(c.nombre));
@@ -1312,8 +1325,8 @@ async function pintarHistorialPropinas() {
 async function pintarCuentaCorriente() {
   const box = $("#pr-pend"); if (!box) return;
   const [rr, rm, rg] = await Promise.all([
-    sb.from("propina_reparto").select("guia_id,nombre,monto_efectivo,monto_tarjeta,propinas(moneda,tarjeta_pagada,anulada)").not("guia_id", "is", null),
-    sb.from("propina_movimientos").select("id,guia_id,fecha,tipo,moneda,monto,nota,anulado").eq("anulado", false).order("fecha", { ascending: false }),
+    todas(() => sb.from("propina_reparto").select("guia_id,nombre,monto_efectivo,monto_tarjeta,propinas(moneda,tarjeta_pagada,anulada)").not("guia_id", "is", null).order("propina_id").order("guia_id")),
+    todas(() => sb.from("propina_movimientos").select("id,guia_id,fecha,tipo,moneda,monto,nota,anulado").eq("anulado", false).order("fecha", { ascending: false }).order("id")),
     sb.from("guias").select("id,nombre").eq("activo", true).order("nombre")
   ]);
   if (rr.error || rm.error) { box.innerHTML = `<div class="card"><p class="err">${esc((rr.error || rm.error).message)}</p></div>`; return; }
