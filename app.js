@@ -2,7 +2,10 @@
    Capturas con fotos, Mis días, Licencias sin señal y Equipo. */
 "use strict";
 
+// Si se abre desde el mail de "olvidé mi contraseña", hay que pedir la nueva
+let enRecuperacion = /type=recovery/.test(location.hash);
 const sb = supabase.createClient(CONFIG.url, CONFIG.key, { auth: { persistSession: true, autoRefreshToken: true } });
+sb.auth.onAuthStateChange(ev => { if (ev === "PASSWORD_RECOVERY") { enRecuperacion = true; verNuevaClave(true); } });
 const $ = s => document.querySelector(s);
 const main = $("#main");
 const ESPECIES = ["Dorado", "Pacú", "Pirá pytá", "Otra"];
@@ -114,11 +117,13 @@ async function iniciar() {
   window.addEventListener("online", () => { actualizarRed(); procesarCola(); });
   window.addEventListener("offline", actualizarRed);
   $("#salir").onclick = salir;
+  $("#clave").onclick = () => verNuevaClave(false);
   $("#cola-btn").onclick = () => procesarCola(true);
   $("#visor-cerrar").onclick = cerrarVisor;
   setInterval(procesarCola, 60000);
 
   const { data: { session } } = await sb.auth.getSession();
+  if (enRecuperacion && session) return verNuevaClave(true);
   if (!session) return verLogin();
   await cargarPerfil(session.user);
 }
@@ -155,16 +160,27 @@ function verLogin(modo = "entrar") {
   const crear = modo === "crear";
   main.innerHTML = `
   <div class="card">
+    <img class="login-logo" src="logo-suinda.png" alt="Suindá Lodge">
     <h2>${crear ? "Crear cuenta" : "Entrar"}</h2>
     ${crear ? `<label for="l-nombre">Nombre y apellido</label><input id="l-nombre" autocomplete="name">` : ""}
     <label for="l-mail">Mail</label><input id="l-mail" type="email" autocomplete="email" inputmode="email">
     <label for="l-pass">Contraseña</label><input id="l-pass" type="password" autocomplete="${crear ? "new-password" : "current-password"}">
-    ${crear ? `<p class="hint">Mínimo 6 caracteres. Después de crearla, el administrador te habilita.</p>` : ""}
+    ${crear ? `<p class="hint">Mínimo 6 caracteres. Después de crearla, el jefe de guías te habilita.</p>` : ""}
     <p class="err" id="l-err" hidden></p>
     <button class="btn" id="l-go">${crear ? "Crear cuenta" : "Entrar"}</button>
     <button class="btn secondary" id="l-alt">${crear ? "Ya tengo cuenta" : "Crear una cuenta nueva"}</button>
-  </div>`;
+    ${crear ? "" : `<p style="text-align:center;margin:14px 0 0"><button class="link" id="l-olvido">Olvidé mi contraseña</button></p>`}
+  </div>
+  <div class="empresa"><img src="logo-nw.png" alt="Nervous Waters"></div>`;
   $("#l-alt").onclick = () => verLogin(crear ? "entrar" : "crear");
+  if ($("#l-olvido")) $("#l-olvido").onclick = async () => {
+    const mail = $("#l-mail").value.trim(), err = $("#l-err");
+    if (!mail) { err.textContent = "Escribí tu mail arriba y volvé a tocar «Olvidé mi contraseña»."; err.hidden = false; return; }
+    if (!online()) { err.textContent = "Hace falta señal."; err.hidden = false; return; }
+    const { error } = await sb.auth.resetPasswordForEmail(mail, { redirectTo: location.origin + location.pathname });
+    if (error) { err.textContent = /rate limit/i.test(error.message) ? "Se mandaron muchos mails seguidos. Probá de nuevo en una hora o pedile ayuda al jefe de guías." : error.message; err.hidden = false; return; }
+    main.innerHTML = `<div class="card"><h2>Revisá tu mail</h2><p>Si <b>${esc(mail)}</b> tiene cuenta, te llega un mail con un enlace para elegir una contraseña nueva. Abrilo desde este mismo teléfono. Si no lo ves, fijate en spam.</p><button class="btn secondary" onclick="location.reload()">Volver</button></div>`;
+  };
   $("#l-go").onclick = async () => {
     const mail = $("#l-mail").value.trim(), pass = $("#l-pass").value, err = $("#l-err");
     err.hidden = true;
@@ -197,7 +213,8 @@ function verPendiente() {
   $("#tabs").hidden = true;
   main.innerHTML = `<div class="card"><h2>Cuenta creada</h2>
     <p>Falta que el administrador te habilite y te asigne tu rol. Cuando lo haga, tocá el botón.</p>
-    <button class="btn" id="p-re">Ya me habilitaron</button></div>`;
+    <button class="btn" id="p-re">Ya me habilitaron</button></div>
+  <div class="empresa"><img src="logo-nw.png" alt="Nervous Waters"></div>`;
   $("#p-re").onclick = async () => { const { data } = await sb.auth.getUser(); if (data.user) cargarPerfil(data.user); };
 }
 
@@ -1166,7 +1183,7 @@ async function verMisPropinas() {
   if (online()) {
     const [rr, rm] = await Promise.all([
       todas(() => sb.from("propina_reparto").select("guia_id,nombre,sesiones,turnos,monto_efectivo,monto_tarjeta,propinas(id,fecha,grupo,clientes,moneda,tarjeta_pagada,sesiones,anulada)").eq("guia_id", perfil.guia_id).order("propina_id")),
-      todas(() => sb.from("propina_movimientos").select("id,fecha,tipo,moneda,monto,nota,anulado").eq("guia_id", perfil.guia_id).eq("anulado", false).order("id"))
+      todas(() => sb.from("propina_movimientos").select("id,guia_id,fecha,tipo,moneda,monto,nota,anulado").eq("guia_id", perfil.guia_id).eq("anulado", false).order("id"))
     ]);
     if (!rr.error && !rm.error) { datos = { rep: rr.data.filter(r => r.propinas && !r.propinas.anulada), movs: rm.data }; store.set("mispropinas2", datos); }
   }
@@ -1527,6 +1544,32 @@ async function verSueldos() {
       const { error } = await sb.from("pagos_guias").insert({ guia_id: gid, desde: h, hasta: h, dias: 0, sueldo_usd: 0, nota: "Pago de corte" });
       toast(error ? error.message : "Corte registrado."); if (!error) verSueldos();
     }
+  };
+}
+
+/* ---------- cambiar la contraseña ---------- */
+function verNuevaClave(recuperando) {
+  $("#tabs").hidden = true;
+  main.innerHTML = `<div class="card"><h2>${recuperando ? "Elegí tu contraseña nueva" : "Cambiar contraseña"}</h2>
+    <label for="nc-1">Contraseña nueva</label><input id="nc-1" type="password" autocomplete="new-password">
+    <label for="nc-2">Repetila</label><input id="nc-2" type="password" autocomplete="new-password">
+    <p class="hint">Mínimo 6 caracteres.</p><p class="err" id="nc-err" hidden></p>
+    <button class="btn" id="nc-ok">Guardar contraseña</button>
+    ${recuperando ? "" : `<button class="btn secondary" id="nc-cancel">Cancelar</button>`}</div>`;
+  if ($("#nc-cancel")) $("#nc-cancel").onclick = () => { $("#tabs").hidden = false; irA(tabActual || "licencias"); };
+  $("#nc-ok").onclick = async () => {
+    const a = $("#nc-1").value, b = $("#nc-2").value, err = $("#nc-err"); err.hidden = true;
+    const fallo = m => { err.textContent = m; err.hidden = false; };
+    if (a.length < 6) return fallo("Tiene que tener al menos 6 caracteres.");
+    if (a !== b) return fallo("Las dos contraseñas no coinciden.");
+    if (!online()) return fallo("Hace falta señal.");
+    $("#nc-ok").disabled = true;
+    const { error } = await sb.auth.updateUser({ password: a });
+    $("#nc-ok").disabled = false;
+    if (error) return fallo(/different from the old/i.test(error.message) ? "Tiene que ser distinta de la anterior." : error.message);
+    toast("Contraseña cambiada.");
+    enRecuperacion = false; history.replaceState(null, "", location.pathname);
+    const { data } = await sb.auth.getUser(); if (data.user) cargarPerfil(data.user);
   };
 }
 

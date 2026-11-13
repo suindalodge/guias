@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Guías Suindá</title>
+<title>Guías · Suindá Lodge</title>
 <meta name="theme-color" content="#0F4C47">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
@@ -16,7 +16,7 @@
 <style>
 :root{
   --bg:#F2F5F3; --surface:#FFFFFF; --ink:#0E2B29; --muted:#5A6E6B; --line:#D5DEDA;
-  --river:#0F4C47; --on-river:#FFFFFF; --gold:#E4A11B; --gold-ink:#2A1C00;
+  --river:#0F4C47; --on-river:#FFFFFF; --gold:#D5B137; --gold-ink:#2A1C00;
   --ok:#1F7A4D; --err:#B3372B; --field:#F7FAF8;
   color-scheme:light;
   box-sizing:border-box;
@@ -26,14 +26,14 @@
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --bg:#0C1716; --surface:#13221F; --ink:#E5EFEC; --muted:#93A8A3; --line:#264340;
-    --river:#5FC3B4; --on-river:#062220; --gold:#F0B53A; --gold-ink:#1E1400;
+    --river:#5FC3B4; --on-river:#062220; --gold:#E2C255; --gold-ink:#1E1400;
     --ok:#69C995; --err:#F08A7E; --field:#0F1D1B;
     color-scheme:dark;
   }
 }
 :root[data-theme="dark"]{
   --bg:#0C1716; --surface:#13221F; --ink:#E5EFEC; --muted:#93A8A3; --line:#264340;
-  --river:#5FC3B4; --on-river:#062220; --gold:#F0B53A; --gold-ink:#1E1400;
+  --river:#5FC3B4; --on-river:#062220; --gold:#E2C255; --gold-ink:#1E1400;
   --ok:#69C995; --err:#F08A7E; --field:#0F1D1B;
   color-scheme:dark;
 }
@@ -50,7 +50,11 @@ button{cursor:pointer}
 .wrap{max-width:560px;margin:0 auto;padding:0 16px 120px}
 header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:18px 0 10px}
 .brand{font-family:"Barlow Condensed","Barlow",sans-serif;font-weight:800;font-size:2rem;letter-spacing:.01em;text-transform:uppercase;line-height:1;margin:0}
-.brand span{color:var(--gold)}
+.brand img{display:block;height:46px;width:auto}
+.empresa{text-align:center;margin:22px 0 4px}
+.empresa img{height:40px;width:auto;background:#fff;border-radius:10px;padding:6px 10px}
+.login-logo{display:block;width:72%;max-width:300px;margin:6px auto 14px}
+.x{background:none;border:0;color:var(--err);font-weight:700;font-size:.85rem;padding:4px 0;min-height:0;-webkit-appearance:none;appearance:none}
 .who{font-size:.9rem;color:var(--muted);text-align:right;line-height:1.2}
 .who b{display:block;color:var(--ink);font-weight:600}
 .link{background:none;border:0;padding:0;color:var(--river);font-weight:600;text-decoration:underline;font-size:.9rem}
@@ -219,8 +223,8 @@ details.rep .list li{padding:6px 0;font-size:.95rem}
 <body>
 <div class="wrap">
   <header>
-    <h1 class="brand">Suind<span>á</span></h1>
-    <div class="who" id="who" hidden><b id="who-name"></b><button class="link" id="salir">Salir</button></div>
+    <h1 class="brand"><img src="logo-suinda.png" alt="Suindá Lodge"></h1>
+    <div class="who" id="who" hidden><b id="who-name"></b><button class="link" id="clave">Contraseña</button> · <button class="link" id="salir">Salir</button></div>
   </header>
   <div id="net" class="offline" hidden>Sin señal: lo que cargues se envía solo al volver la conexión.</div>
   <div id="cola" class="pending" hidden><span id="cola-txt"></span><button id="cola-btn">Enviar ahora</button></div>
