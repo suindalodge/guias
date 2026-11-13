@@ -223,7 +223,7 @@ function armarTabs() {
   const r = perfil.rol, t = [];
   if (perfil.guia_id) t.push(["capturas", "Capturas"], ["entregas", "Entregas"], ["dias", "Días"]);
   else if (r === "admin" || r === "jefe") t.push(["capturas", "Capturas"]);
-  t.push(["licencias", "Licencias"]);
+  if (r !== "house_manager") t.push(["licencias", "Licencias"]);   // el house manager no usa licencias
   if (["admin", "jefe", "house_manager"].includes(r)) t.push(["cuentas", "Cuentas"]);
   if (r === "admin" || r === "jefe") t.push(["equipo", "Equipo"]);
   const inn = $("#tabs-in");
@@ -1556,7 +1556,7 @@ function verNuevaClave(recuperando) {
     <p class="hint">Mínimo 6 caracteres.</p><p class="err" id="nc-err" hidden></p>
     <button class="btn" id="nc-ok">Guardar contraseña</button>
     ${recuperando ? "" : `<button class="btn secondary" id="nc-cancel">Cancelar</button>`}</div>`;
-  if ($("#nc-cancel")) $("#nc-cancel").onclick = () => { $("#tabs").hidden = false; irA(tabActual || "licencias"); };
+  if ($("#nc-cancel")) $("#nc-cancel").onclick = () => { $("#tabs").hidden = false; irA(tabActual || $("#tabs-in button").dataset.tab); };
   $("#nc-ok").onclick = async () => {
     const a = $("#nc-1").value, b = $("#nc-2").value, err = $("#nc-err"); err.hidden = true;
     const fallo = m => { err.textContent = m; err.hidden = false; };
