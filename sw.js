@@ -1,5 +1,5 @@
 // Guarda la app en el teléfono para que abra sin señal.
-const VERSION = "suinda-v15";
+const VERSION = "suinda-v18";
 const PROPIOS = ["./", "./index.html", "./app.js", "./config.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./logo-suinda.png", "./logo-nw.png"];
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js";
 

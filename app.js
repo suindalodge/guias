@@ -118,6 +118,7 @@ async function iniciar() {
   window.addEventListener("offline", actualizarRed);
   $("#salir").onclick = salir;
   $("#clave").onclick = () => verNuevaClave(false);
+  $("#avisos").onclick = verAvisos;
   $("#cola-btn").onclick = () => procesarCola(true);
   $("#visor-cerrar").onclick = cerrarVisor;
   setInterval(procesarCola, 60000);
@@ -146,6 +147,7 @@ async function cargarPerfil(user) {
   if (p.rol === "pendiente") return verPendiente();
   armarTabs();
   procesarCola();
+  ofrecerAvisos();
 }
 
 async function salir() {
@@ -701,11 +703,15 @@ async function verEquipo() {
       <div><label for="a-moneda">Moneda</label><select id="a-moneda"><option value="USD">Dólares</option><option value="ARS">Pesos</option></select></div></div>
     <button class="btn" id="a-ok">Agregar artículo</button>
   </div>
+  ${admin ? `<div class="card"><h2>Avisos al celular</h2>
+    <p class="hint" style="margin-top:0">Para que la app pueda mandar avisos hace falta un par de claves. Se generan una sola vez.</p>
+    <div id="av-conf"><p class="empty">Cargando…</p></div></div>` : ""}
   ${admin ? `<div class="card"><h2>Usuarios</h2><p class="hint" style="margin-top:0">Cada persona crea su cuenta en la app. Acá le asignás el rol y, si es guía, quién es.</p>
     <ul class="list" id="eq-users"><li class="empty">Cargando…</li></ul></div>` : ""}`;
   if (!online()) { main.insertAdjacentHTML("afterbegin", `<div class="offline">Para editar el equipo hace falta señal.</div>`); return; }
   pintarArticulosEquipo();
   prepararChart(admin);
+  if (admin) prepararClavesAvisos();
   $("#inv-gen").onclick = () => invitar("");
 
   const [{ data: guias }, rus] = await Promise.all([
@@ -1544,6 +1550,102 @@ async function verSueldos() {
       const { error } = await sb.from("pagos_guias").insert({ guia_id: gid, desde: h, hasta: h, dias: 0, sueldo_usd: 0, nota: "Pago de corte" });
       toast(error ? error.message : "Corte registrado."); if (!error) verSueldos();
     }
+  };
+}
+
+
+/* =====================================================================
+   AVISOS AL CELULAR
+   ===================================================================== */
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const deB64u = t => { const b = atob(t.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((t.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+const esIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+const instalada = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const soportaAvisos = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const swListo = () => Promise.race([navigator.serviceWorker.ready,
+  new Promise((_, no) => setTimeout(() => no(new Error("La app todavía se está instalando en el teléfono. Cerrala, abrila de nuevo con señal y probá otra vez.")), 5000))]);
+async function suscripcionActual() {
+  if (!soportaAvisos()) return null;
+  try { const reg = await swListo(); return await reg.pushManager.getSubscription(); } catch (_) { return null; }
+}
+const quienRecibe = () => perfil.guia_id || perfil.rol === "house_manager";
+
+async function activarAvisos() {
+  if (esIOS() && !instalada()) throw new Error("En iPhone, primero agregá la app a la pantalla de inicio (Safari → Compartir → Agregar a inicio) y abrila desde ahí.");
+  if (!soportaAvisos()) throw new Error("Este navegador no permite avisos. Probá con Chrome (Android) o con la app instalada (iPhone).");
+  if (!online()) throw new Error("Hace falta señal.");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("No diste permiso para los avisos. Podés habilitarlo en los ajustes del navegador, en este sitio → Notificaciones.");
+  const { data } = await sb.from("config").select("valor").eq("clave", "vapid_public").maybeSingle();
+  if (!data || !data.valor) throw new Error("Los avisos todavía no están configurados. Avisale al jefe de guías.");
+  const reg = await swListo();
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: deB64u(data.valor) });
+  const j = sub.toJSON();
+  const { error } = await sb.from("push_suscripciones").upsert({ endpoint: j.endpoint, perfil_id: perfil.id, p256dh: j.keys.p256dh, auth: j.keys.auth });
+  if (error) throw error;
+}
+async function desactivarAvisos() {
+  const sub = await suscripcionActual();
+  if (sub) { await sb.from("push_suscripciones").delete().eq("endpoint", sub.endpoint); await sub.unsubscribe(); }
+}
+
+async function verAvisos() {
+  $("#tabs").hidden = true; $("#avisos-banner").hidden = true;
+  const sub = await suscripcionActual().catch(() => null);
+  const recibe = quienRecibe();
+  main.innerHTML = `<div class="card"><h2>Avisos al celular</h2>
+    ${perfil.guia_id ? `<p>Te llegan dos avisos por cada <b>bloque</b> de días de trabajo: uno la semana anterior y otro el día antes de empezar.</p>` : ""}
+    ${perfil.rol === "house_manager" ? `<p>Te llega un aviso el día anterior con los guías que llegan a trabajar.</p>` : ""}
+    ${!recibe ? `<p class="hint">Con tu perfil no recibís avisos automáticos, pero podés activarlos para probar.</p>` : ""}
+    <p class="${sub ? "okmsg" : "hint"}" style="margin-top:12px">${sub ? "Los avisos están activados en este teléfono." : "Los avisos no están activados en este teléfono."}</p>
+    ${esIOS() && !instalada() ? `<p class="err">En iPhone, primero agregá la app a la pantalla de inicio (Safari → Compartir → Agregar a inicio) y abrila desde ahí.</p>` : ""}
+    <p class="err" id="av-err" hidden></p>
+    ${sub ? `<button class="btn" id="av-probar">Mandarme un aviso de prueba</button><button class="btn secondary" id="av-off">Desactivar en este teléfono</button>`
+          : `<button class="btn" id="av-on">Activar avisos</button>`}
+    <button class="btn secondary" id="av-volver">Volver</button></div>`;
+  const err = m => { $("#av-err").textContent = m; $("#av-err").hidden = false; };
+  $("#av-volver").onclick = () => { $("#tabs").hidden = false; irA(tabActual || $("#tabs-in button").dataset.tab); };
+  if ($("#av-on")) $("#av-on").onclick = async () => { try { await activarAvisos(); toast("Avisos activados."); verAvisos(); } catch (e) { err(e.message || String(e)); } };
+  if ($("#av-off")) $("#av-off").onclick = async () => { await desactivarAvisos(); toast("Avisos desactivados."); verAvisos(); };
+  if ($("#av-probar")) $("#av-probar").onclick = async () => {
+    const { data, error } = await sb.functions.invoke("avisos", { body: { accion: "probar" } });
+    if (error || (data && data.error)) return err("No se pudo mandar: " + ((data && data.error) || error.message));
+    toast(data.enviados ? "Aviso enviado: debería llegarte en unos segundos." : "No se encontró este teléfono. Desactivá y volvé a activar.");
+  };
+}
+
+// Banner para que guías y house manager activen los avisos
+async function ofrecerAvisos() {
+  if (!quienRecibe() || !soportaAvisos() || store.get("avisos_no", false)) return;
+  if (await suscripcionActual().catch(() => null)) return;
+  const b = $("#avisos-banner"); if (!b) return;
+  b.querySelector("span").textContent = perfil.guia_id ? "Activá los avisos para saber cuándo te toca trabajar." : "Activá los avisos para saber qué guías llegan a trabajar.";
+  b.hidden = false;
+  $("#ab-si").onclick = () => { b.hidden = true; verAvisos(); };
+  $("#ab-no").onclick = () => { b.hidden = true; store.set("avisos_no", true); };
+}
+
+// Equipo: generar las claves de avisos (una sola vez)
+async function prepararClavesAvisos() {
+  const box = $("#av-conf"); if (!box) return;
+  const { data } = await sb.from("config").select("valor").eq("clave", "vapid_public").maybeSingle();
+  if (data && data.valor) {
+    box.innerHTML = `<p class="okmsg">Las claves ya están generadas.</p><p class="hint">Si la función de avisos ya tiene cargada la clave privada, no hace falta hacer nada más. Generar claves nuevas obliga a que todos vuelvan a activar los avisos.</p>
+      <button class="btn small secondary" id="av-gen">Generar claves nuevas</button><div id="av-priv"></div>`;
+  } else box.innerHTML = `<button class="btn" id="av-gen">Generar claves</button><div id="av-priv"></div>`;
+  $("#av-gen").onclick = async () => {
+    if (data && data.valor && !confirm("¿Generar claves nuevas? Todos van a tener que volver a activar los avisos.")) return;
+    const k = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
+    const jwk = await crypto.subtle.exportKey("jwk", k.privateKey);
+    const pub = b64u(new Uint8Array([4, ...deB64u(jwk.x), ...deB64u(jwk.y)]));
+    const { error } = await sb.from("config").upsert({ clave: "vapid_public", valor: pub });
+    if (error) return toast("No se pudo guardar: " + error.message);
+    $("#av-priv").innerHTML = `<p class="lbl">Clave privada (copiala ahora: no se vuelve a mostrar)</p>
+      <textarea readonly rows="2" style="font-family:monospace;font-size:.85rem">${jwk.d}</textarea>
+      <button class="btn small" id="av-copiar">Copiar clave privada</button>
+      <p class="hint">Pegala en Supabase → Edge Functions → Secrets, con el nombre <b>VAPID_PRIVATE</b>. No la compartas con nadie.</p>`;
+    $("#av-copiar").onclick = () => navigator.clipboard.writeText(jwk.d).then(() => toast("Copiada."));
   };
 }
 
